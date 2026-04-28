@@ -27,7 +27,7 @@
 .global _vectors
 .global _reset_handler
 
-
+.section ._vectors, "ax"
 _vectors:
     B _reset_handler @; rst interrupt vectors here by abi contract
     B _undef_handler
@@ -40,6 +40,9 @@ _vectors:
 
 
 _reset_handler:
+    ldr r0, =_vectors
+    mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
+
     ldr r0, =_fiq_stack_top
 
     @; SET STACK POINTERS FOR EACH MODE
@@ -143,6 +146,7 @@ _undef_handler:
 _swi_handler:
 _prefetch_handler:
 _data_handler:
+    b .
 
 _irq_handler:
     sub lr, lr, #4 @; get lr_irq
