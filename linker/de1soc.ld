@@ -9,7 +9,7 @@ MEMORY {
 _stack_size = 0x2000;   /* 8KB for each mode stack */
 
 SECTIONS {
-    .vectors ORIGIN(OCRAM) : {
+    ._vectors ORIGIN(OCRAM) : {
         KEEP(*(.vectors))
     } > OCRAM
 
