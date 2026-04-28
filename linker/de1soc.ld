@@ -1,6 +1,6 @@
 OUTPUT_FORMAT("elf32-littlearm")
 OUTPUT_ARCH(arm)
-ENTRY(_reset)
+ENTRY(_reset_handler)
 
 MEMORY {
     OCRAM (rwx) : ORIGIN = 0xFFFF0000, LENGTH = 64K
@@ -36,10 +36,12 @@ SECTIONS {
 
     . = ALIGN(8);
     _heap_start = .;
-    _heap_end   = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 3);
+    _heap_end       = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 4);
 
-    /* Mode stacks at top of OCRAM — grow downward from their tops */
-    _irq_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 1);
-    _svc_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 2);
+
+    /*for now ignore usr, abort, undef*/
     _sys_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 3);
+    _svc_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 2);
+    _irq_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 1);
+    _fiq_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 0);
 }
