@@ -13,6 +13,11 @@
 .equ I_BIT, 0x80   @ IRQ disable/mask bit, CPSR[7]
 .equ F_BIT, 0x40   @ FIQ disable/mask bit, CPSR[6]
 
+@; CYCLONE V MAPPINGS
+.equ GICC_BASE,  0xFFFEC100
+.equ GICC_IAR,   0xFFFEC10C    @; GICC_BASE + 0x00C
+.equ GICC_EOIR,  0xFFFEC110    @; GICC_BASE + 0x010
+
 
 
 @; CERTIFIED OHIO STEPPER GANG GANG
@@ -59,8 +64,9 @@ _reset_handler:
     ldr r1, =_stack_size
     sub r0, r0, r1 
 
+    @; RUNTIME IS NOMINALLY IN SYSTEM MODE
 
-    @; Disabling MMU and caches explicitly here, note that A9 will should do this automatically upon true reset however we may wish to vector to reset handler upon some other condition in the future
+    @; Disabling MMU and caches explicitly here, note that A9 should do this automatically upon true reset however we may wish to vector to reset handler upon some other condition in the future
 
     @; SELECTION HIERARCHY: opcode1->CRn->CRm->opcode2
     @; opcode1: domain select e.g. sys, addr, virt
@@ -117,16 +123,19 @@ set_loop:
     orr r1, r1, #(0x1<<11)
     mcr p15, 0, r1, c1, c0, 0
 
+    msr CPSR_c, #(MODE_SYS)    @; no I_BIT, no F_BIT = both enabled
 
     bl main
     
 
 
-
-
-
-
-
+identify_and_clear_source:
+    ldr     r0, =GICC_IAR
+    ldr     r1, [r0]            @; acknowledge + get ID
+    ldr     r0, =GICC_EOIR
+    str     r1, [r0]            @; EOI
+    mov     r0, r1              @; return ID in r0, same value as in iar because its the same interrupt
+    BX      lr
 
 
 
@@ -134,5 +143,53 @@ _undef_handler:
 _swi_handler:
 _prefetch_handler:
 _data_handler:
+
 _irq_handler:
+    sub lr, lr, #4 @; get lr_irq
+    srsfd sp!, #0x1f @; save lr_irq and spsr_irq onto sysmode stack; decrement sysmode sp after
+    
+    cps #0x1f @; switch to system mode
+    cpsid i @; no nested interrupts for now
+
+    push {r0-r3, r12} @; store AAPCS regset
+
+    and r1, sp, #4 @; 8-byte align sp
+    sub sp, sp, r1 
+    push {r1, lr} @; store adjustment and lr_sys
+
+    BL identify_and_clear_source
+    BL c_irq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
+
+    pop {r1, lr} @; restore lr_sys 
+    add sp, sp, r1 @; unadjust stack 
+    pop {r0-r3, r12} @; restore AAPCS regset 
+
+    cpsie i @; re-enable interrupts
+
+    RFEFD sp! @; restore lr_irq and spsr_irq from sysmode stack, inc sp, branch to lr_irq and restore cpsr from spsr_irq
+
+
+
 _fiq_handler:
+    sub lr, lr, #4 @; get lr_irq
+    srsfd sp!, #0x1f @; save lr_irq and spsr_irq onto sysmode stack; decrement sysmode sp after
+    
+    cps #0x1f @; switch to system mode
+    cpsid if @; no nested interrupts for now
+
+    push {r0-r3, r12} @; store AAPCS regset
+
+    and r1, sp, #4 @; 8-byte align sp
+    sub sp, sp, r1 
+    push {r1, lr} @; store adjustment and lr_sys
+
+    BL identify_and_clear_source
+    BL c_fiq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
+
+    pop {r1, lr} @; restore lr_sys 
+    add sp, sp, r1 @; unadjust stack 
+    pop {r0-r3, r12} @; restore AAPCS regset 
+
+    cpsie if @; re-enable interrupts
+
+    RFEFD sp! @; restore lr_irq and spsr_irq from sysmode stack, inc sp, branch to lr_irq and restore cpsr from spsr_irq
