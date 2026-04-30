@@ -62,7 +62,6 @@ void c_fiq_handler(int r0)
 {
     (void)r0;
 }
-#define TEST_CHECK (*(volatile uint32_t *)0xFFFF0400)
 
 void main(void)
 {

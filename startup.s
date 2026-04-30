@@ -146,7 +146,6 @@ _undef_handler:
 _swi_handler:
 _prefetch_handler:
 _data_handler:
-    b .
 
 _irq_handler:
     sub lr, lr, #4 @; get lr_irq
