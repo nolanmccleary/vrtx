@@ -7,29 +7,33 @@
 #define GICC_CTLR       (*(volatile uint32_t *)0xFFFEC100)
 #define GICC_PMR        (*(volatile uint32_t *)0xFFFEC104)
 
-#define PTIMER_LOAD     (*(volatile uint32_t *)0xFFFEC600)
-#define PTIMER_COUNTER  (*(volatile uint32_t *)0xFFFEC604)
-#define PTIMER_CTRL     (*(volatile uint32_t *)0xFFFEC608)
-#define PTIMER_STATUS   (*(volatile uint32_t *)0xFFFEC60C)
+#define GTIMER_CNTRL    (*(volatile uint32_t *)0xFFFEC200)
+#define GTIMER_CNTRH    (*(volatile uint32_t *)0xFFFEC204)
+#define GTIMER_CTRL     (*(volatile uint32_t *)0xFFFEC208)
+#define GTIMER_ISR      (*(volatile uint32_t *)0xFFFEC20C)
+#define GTIMER_CMPL     (*(volatile uint32_t *)0xFFFEC210)
+#define GTIMER_CMPH     (*(volatile uint32_t *)0xFFFEC214)
+#define GTIMER_AUTOINC  (*(volatile uint32_t *)0xFFFEC218)
+
+#define WDT_HPS (*(volatile uint32_t*)0xFFFEC600)
+#define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
 
 
-
-
-
-static void ptimer_init(void)
+static void gtimer_init(void)
 {
-    PTIMER_LOAD = 399999;           // ~1ms at 400MHz PERIPHCLK
-    PTIMER_CTRL = (0 << 8)          // prescaler /1
-               | (1 << 2)           // IRQ enable
-               | (1 << 1)           // auto-reload
-               | (1 << 0);          // enable
+    GTIMER_CTRL    = 0;
+    GTIMER_ISR     = 1;
+    GTIMER_AUTOINC = 399999;
+    GTIMER_CMPL    = GTIMER_CNTRL + 399999;
+    GTIMER_CMPH    = GTIMER_CNTRH;
+    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
 }
 
 
 static void gic_init(void)
 {
     GICD_CTLR       = 1;
-    GICD_ISENABLER0 |= (1 << 29);
+    GICD_ISENABLER0 |= (1 << 27);
     GICC_PMR        = 0xFF;
     GICC_CTLR       = 1;
 }
@@ -37,7 +41,8 @@ static void gic_init(void)
 
 void c_irq_handler(int r0)
 {
-    PTIMER_STATUS = 1; //clear interrupt flag
+    GTIMER_ISR = 1;
+    WDT_L4 = 0x76;
     CANARY++; 
 }
 
@@ -51,8 +56,8 @@ void c_fiq_handler(int r0)
 void main(void)
 {
     gic_init();
-    ptimer_init();
-    CANARY = 67;
+    gtimer_init();
+    CANARY = 0;
     while (1) 
     {
         // CANARY++;

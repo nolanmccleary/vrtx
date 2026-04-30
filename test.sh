@@ -18,8 +18,8 @@ sleep 1
 
 # read canary
 openocd -f openocd/de1soc.cfg \
-  -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "shutdown" 2>&1 | grep "^0xffff8000"
+  -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff8000"
 
-sleep 1
+sleep 4
 openocd -f openocd/de1soc.cfg \
-  -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "shutdown" 2>&1 | grep "^0xffff8000"
+  -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff8000"
