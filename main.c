@@ -1,6 +1,9 @@
 #include <stdint.h>
+#include <stdbool.h>
+#include "allocator.h"
 
 #define CANARY (*(volatile uint32_t *)0xFFFF8000)
+#define ALLOC_CHECK (*(volatile uint32_t *)0xFFFF8030)
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
 #define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
@@ -15,15 +18,15 @@
 #define GTIMER_CMPH     (*(volatile uint32_t *)0xFFFEC214)
 #define GTIMER_AUTOINC  (*(volatile uint32_t *)0xFFFEC218)
 
-#define WDT_HPS (*(volatile uint32_t*)0xFFFEC600)
 #define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
+
 
 
 static void gtimer_init(void)
 {
     GTIMER_CTRL    = 0;
     GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 399999;
+    GTIMER_AUTOINC = 399999;                    //400k counts/tick. 1000Hz if timer fires at 400k
     GTIMER_CMPL    = GTIMER_CNTRL + 399999;
     GTIMER_CMPH    = GTIMER_CNTRH;
     GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
@@ -39,11 +42,19 @@ static void gic_init(void)
 }
 
 
-void c_irq_handler(int r0)
+void c_irq_handler(int id)
 {
-    GTIMER_ISR = 1;
-    WDT_L4 = 0x76;
-    CANARY++; 
+    switch(id)
+    {
+        case 0x1b: //gtimer interrupt
+            WDT_L4 = 0x76; //old yeller his ass
+            GTIMER_ISR = 1;
+            CANARY++;
+            break;
+
+        default:
+            break;
+    }
 }
 
 
@@ -51,15 +62,27 @@ void c_fiq_handler(int r0)
 {
     (void)r0;
 }
-
+#define TEST_CHECK (*(volatile uint32_t *)0xFFFF0400)
 
 void main(void)
 {
     gic_init();
     gtimer_init();
     CANARY = 0;
+
+    heap_init();
+
+    uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
+    uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
+    uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
+
+    *test3 = 69;
+
+
+
+
     while (1) 
     {
-        // CANARY++;
+        ALLOC_CHECK = *test3;
     }
 }

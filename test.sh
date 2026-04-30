@@ -20,6 +20,9 @@ sleep 1
 openocd -f openocd/de1soc.cfg \
   -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff8000"
 
-sleep 4
+sleep 1
 openocd -f openocd/de1soc.cfg \
   -c "init" -c "halt" -c "mdw 0xFFFF8000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff8000"
+
+openocd -f openocd/de1soc.cfg \
+  -c "init" -c "halt" -c "mdw 0xFFFF8030" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff8030"
