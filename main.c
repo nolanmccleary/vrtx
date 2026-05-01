@@ -1,9 +1,8 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "allocator.h"
 
-#define CANARY (*(volatile uint32_t *)0xFFFF8000)
-#define ALLOC_CHECK (*(volatile uint32_t *)0xFFFF8030)
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
 #define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
@@ -21,6 +20,16 @@
 #define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
 
 
+//////////////////////////////////// STATUS REGS ////////////////////////////////////////////////////
+
+extern char _status_base;
+
+#define VECTOR_FLAG (*(volatile uint32_t*)&_status_base)
+#define TICK_MIRROR  (*((volatile uint32_t*)(&_status_base) + 1))
+#define ALLOC_CHECK (*((volatile uint32_t*)(&_status_base) + 2))
+
+
+////////////////////////////////////// HW INIT //////////////////////////////////////////////////////////
 
 static void gtimer_init(void)
 {
@@ -42,14 +51,51 @@ static void gic_init(void)
 }
 
 
+/////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
+uint32_t gTick = 0;
+
+
+
+void c_reset_handler(void)
+{
+    VECTOR_FLAG = 0x00;
+}
+
+
+void c_undef_handler(void)
+{
+    VECTOR_FLAG = 0x04;
+}
+
+
+void c_swi_handler(void)
+{
+    VECTOR_FLAG = 0x08;
+}
+
+
+void c_prefetch_handler(void)
+{
+    VECTOR_FLAG = 0x0C;
+}
+
+
+void c_data_handler(void)
+{
+    VECTOR_FLAG = 0x10;
+}
+
+
 void c_irq_handler(int id)
 {
+    VECTOR_FLAG = 0x18;
     switch(id)
     {
         case 0x1b: //gtimer interrupt
             WDT_L4 = 0x76; //old yeller his ass
             GTIMER_ISR = 1;
-            CANARY++;
+            TICK_MIRROR++;
+            gTick++;
             break;
 
         default:
@@ -58,16 +104,20 @@ void c_irq_handler(int id)
 }
 
 
-void c_fiq_handler(int r0)
+void c_fiq_handler(int id)
 {
-    (void)r0;
+    VECTOR_FLAG = 0x1C;
+    (void)id;
 }
+
+
+
+///////////////////////////////////////////// MAIN LOOP ////////////////////////////////////////////////////
 
 void main(void)
 {
     gic_init();
     gtimer_init();
-    CANARY = 0;
 
     heap_init();
 
@@ -77,11 +127,9 @@ void main(void)
 
     *test3 = 69;
 
-
-
-
     while (1) 
     {
         ALLOC_CHECK = *test3;
+        VECTOR_FLAG = 0x1F;
     }
 }

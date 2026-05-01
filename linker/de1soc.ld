@@ -7,10 +7,16 @@ MEMORY {
 }
 
 _stack_size = 0x2000;   /* 8KB for each mode stack */
+_capture_region = 0x80;
 
 SECTIONS {
-    ._vectors ORIGIN(OCRAM) : {
-        KEEP(*(.vectors))
+    .status ORIGIN(OCRAM) (NOLOAD) : {
+        _status_base = .;
+        . = . + _capture_region;
+    } > OCRAM
+
+    ._vectors ORIGIN(OCRAM) + _capture_region : {
+        KEEP(*(._vectors))
     } > OCRAM
 
     .text : {
@@ -39,7 +45,7 @@ SECTIONS {
     _heap_end       = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 4);
 
 
-    /*for now ignore usr, abort, undef*/
+    /*for now ignore usr, abrt, undef*/
     _sys_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 3);
     _svc_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 2);
     _irq_stack_top  = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 1);

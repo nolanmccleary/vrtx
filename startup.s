@@ -143,9 +143,22 @@ identify_and_clear_source:
 
 
 _undef_handler:
+    BL c_undef_handler
+    b .
+
 _swi_handler:
+    BL c_swi_handler
+    b .
+
 _prefetch_handler:
+    BL c_prefetch_handler
+    b .
+
 _data_handler:
+    BL c_data_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
+    b . @; For now just halt
+
+
 
 _irq_handler:
     sub lr, lr, #4 @; get lr_irq
