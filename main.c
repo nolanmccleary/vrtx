@@ -24,9 +24,10 @@
 
 extern char _status_base;
 
-#define VECTOR_FLAG (*(volatile uint32_t*)&_status_base)
-#define TICK_MIRROR  (*((volatile uint32_t*)(&_status_base) + 1))
-#define ALLOC_CHECK (*((volatile uint32_t*)(&_status_base) + 2))
+#define VECTOR_FLAG      (*(volatile uint32_t*)&_status_base)
+#define TICK_MIRROR      (*((volatile uint32_t*)&_status_base + 1))
+#define ALLOC_CHECK      (*((volatile uint32_t*)&_status_base + 2))
+#define SDRAM_TEST_RESULT (*((volatile uint32_t*)&_status_base + 3))
 
 
 ////////////////////////////////////// HW INIT //////////////////////////////////////////////////////////
@@ -112,24 +113,48 @@ void c_fiq_handler(int id)
 
 
 
+///////////////////////////////////////////// SDRAM TEST ////////////////////////////////////////////////////
+
+#define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
+#define SDRAM_TEST_WORDS (256 * 1024)  /* 1MB */
+
+static void sdram_test(void)
+{
+    volatile uint32_t *p = SDRAM_BASE;
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++)
+        p[i] = i;
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
+        if (p[i] != i) {
+            SDRAM_TEST_RESULT = (uint32_t)&p[i];  /* first failing address */
+            return;
+        }
+    }
+
+    SDRAM_TEST_RESULT = 0xDEAD0000;  /* pass sentinel */
+}
+
+
 ///////////////////////////////////////////// MAIN LOOP ////////////////////////////////////////////////////
 
 void main(void)
 {
     gic_init();
     gtimer_init();
+    // sdram_test();
 
-    heap_init();
+    // heap_init();
 
-    uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
-    uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
-    uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
+    // uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
+    // uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
+    // uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
 
-    *test3 = 69;
+    // *test3 = 69;
 
     while (1) 
     {
-        ALLOC_CHECK = *test3;
+        // ALLOC_CHECK = *test3;
         VECTOR_FLAG = 0x1F;
     }
 }

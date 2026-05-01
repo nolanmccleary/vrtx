@@ -36,6 +36,6 @@ openocd -f openocd/de1soc.cfg \
 openocd -f openocd/de1soc.cfg \
   -c "init" -c "halt" -c "mdw 0xFFFF0000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff0000"
 
-# confirm SDRAM live (bus error = preloader didn't run; valid data = calibrated)
+# SDRAM test result: 0xDEAD0000 = pass, any address = first failing word
 openocd -f openocd/de1soc.cfg \
-  -c "init" -c "halt" -c "mdw 0x00000000" -c "resume" -c "shutdown" 2>&1 | grep -E "^0x00000000|error"
+  -c "init" -c "halt" -c "mdw 0xFFFF000C" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff000c"
