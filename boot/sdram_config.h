@@ -170,7 +170,7 @@
 #define TRESET_CNTR2_VAL	10
 
 /* Sequencer ac_rom_init configuration */
-const u32 ac_rom_init[] = {
+static const u32 ac_rom_init[] = {
 	0x20700000,
 	0x20780000,
 	0x10080431,
@@ -210,7 +210,7 @@ const u32 ac_rom_init[] = {
 };
 
 /* Sequencer inst_rom_init configuration */
-const u32 inst_rom_init[] = {
+static const u32 inst_rom_init[] = {
 	0x80000,
 	0x80680,
 	0x8180,

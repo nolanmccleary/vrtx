@@ -1,7 +1,8 @@
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include "allocator.h"
+#include "boot/boot.h"
+#include "boot/sequencer.h"
 
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
@@ -36,8 +37,8 @@ static void gtimer_init(void)
 {
     GTIMER_CTRL    = 0;
     GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 399999;                    //400k counts/tick. 1000Hz if timer fires at 400k
-    GTIMER_CMPL    = GTIMER_CNTRL + 399999;
+    GTIMER_AUTOINC = 199999;                    //400k counts/tick. 1000Hz if timer fires at 400k
+    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
     GTIMER_CMPH    = GTIMER_CNTRH;
     GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
 }
@@ -140,16 +141,21 @@ static void sdram_test(void)
 
 void main(void)
 {
+    pll_init();
+    scan_mgr_init();
+    // sdram_ctrl_init();
+    // sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+
     gic_init();
     gtimer_init();
     // sdram_test();
 
     // heap_init();
-
+    //
     // uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
     // uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
     // uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
-
+    //
     // *test3 = 69;
 
     while (1) 
