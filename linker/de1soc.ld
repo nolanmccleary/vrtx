@@ -53,8 +53,7 @@ SECTIONS {
     _fiq_stack_top = . + (_stack_size * 4);
 
     /* SDRAM heap */
-    . = ORIGIN(SDRAM);
     . = ALIGN(8);
     _heap_start = .;
-    _heap_end = ORIGIN(SDRAM) + LENGTH(SDRAM);
+    _heap_end = ORIGIN(OCRAM) + LENGTH(OCRAM);
 }
