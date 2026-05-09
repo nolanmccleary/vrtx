@@ -41,7 +41,7 @@ bool add_task(task_t task)
         }
     }
 
-    else return false;
+    return false;
 }
 
 

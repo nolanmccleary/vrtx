@@ -86,7 +86,6 @@ void c_irq_handler(int id)
         case 0x1b: //gtimer interrupt
             WDT_L4 = 0x76; //old yeller his ass
             GTIMER_ISR = 1;
-            task_handler();
             TICK_MIRROR++;
             gTick++;
             break;
@@ -190,6 +189,7 @@ void main(void)
 
     while (1) 
     {
+        task_handler();
         ALLOC_CHECK = *test3;
         GENERAL_FLAG = 0x69;
     }

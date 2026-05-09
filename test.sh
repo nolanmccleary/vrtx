@@ -48,5 +48,8 @@ openocd -f openocd/de1soc.cfg \
   -c "init" -c "halt" -c "mdw 0xFFFF0014" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff0014" | sed 's/^/SCHED_COUNT_2: /'
 
 openocd -f openocd/de1soc.cfg \
+  -c "init" -c "halt" -c "mdw 0xFFFF0000" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff0000" | sed 's/^/VECTOR_FLAG: /'
+
+openocd -f openocd/de1soc.cfg \
   -c "init" -c "halt" -c "mdw 0xFFFF0018" -c "resume" -c "shutdown" 2>&1 | grep "^0xffff0018" | sed 's/^/GENERAL_FLAG: /'
 
