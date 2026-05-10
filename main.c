@@ -176,7 +176,7 @@ void main(void)
     uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
     uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
 
-    *test3 = 0x69;
+    *test3 = 0x67;
     VECTOR_FLAG = 0x1F;
 
     task_t task1 = {0};

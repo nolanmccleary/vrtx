@@ -9,10 +9,21 @@ MEMORY {
     OCRAM (rwx) : ORIGIN = 0xFFFF0000, LENGTH = 64K
 }
 
-_stack_size = 0x2000;   /* 8KB for each mode stack */
+_stack_size = 0x2000;   /* 8KB for each stack */
+_heap_size = 0x01000000; /* 16MB heap */
+_heap_offset = 0x100000; /* 1MB offset */
 _capture_region = 0x80;
 
 SECTIONS {
+
+    .heap ORIGIN(SDRAM) + _heap_offset (NOLOAD) : {
+        . = ALIGN(8);
+        _heap_start = .;
+        . = . + _heap_size;
+        _heap_end = .;
+    } > SDRAM
+
+
     .status ORIGIN(OCRAM) (NOLOAD) : {
         _status_base = .;
         . = . + _capture_region;
@@ -52,8 +63,4 @@ SECTIONS {
     _irq_stack_top = . + (_stack_size * 3);
     _fiq_stack_top = . + (_stack_size * 4);
 
-    /* SDRAM heap */
-    . = ALIGN(8);
-    _heap_start = .;
-    _heap_end = ORIGIN(OCRAM) + LENGTH(OCRAM);
 }
