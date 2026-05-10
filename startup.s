@@ -128,6 +128,15 @@ set_loop:
 
     msr CPSR_c, #(MODE_SYS)    @; no I_BIT, no F_BIT = both enabled
 
+    @ Zero BSS
+    ldr r0, =_bss_start
+    ldr r1, =_bss_end
+    mov r2, #0
+bss_zero:
+    cmp r0, r1
+    strlt r2, [r0], #4
+    blt bss_zero
+
     bl main
     
 

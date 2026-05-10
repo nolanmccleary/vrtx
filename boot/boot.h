@@ -79,7 +79,6 @@
 #define SDR_BASE                0xFFC25000U
 #define SDR_R(off)              (*(volatile uint32_t*)(SDR_BASE + (off)))
 
-/* Offsets match struct socfpga_sdr_ctrl from sdram_gen5.h */
 #define SDR_CTRLCFG             SDR_R(0x000)
 #define SDR_DRAMTIMING1         SDR_R(0x004)
 #define SDR_DRAMTIMING2         SDR_R(0x008)
@@ -87,16 +86,9 @@
 #define SDR_DRAMTIMING4         SDR_R(0x010)
 #define SDR_LOWPWRTIMING        SDR_R(0x014)
 #define SDR_DRAMODT             SDR_R(0x018)
-#define SDR_EXTRATIME1          SDR_R(0x01C)
-/* padding[3] at 0x20, 0x24, 0x28 */
 #define SDR_DRAMADDRW           SDR_R(0x02C)
 #define SDR_DRAMIFWIDTH         SDR_R(0x030)
 #define SDR_DRAMDEVWIDTH        SDR_R(0x034)
-/* dram_sts at 0x38 */
-#define SDR_DRAMINTR            SDR_R(0x03C)
-/* sbe/dbe/err/drop at 0x40-0x50 */
-#define SDR_LOWPWREQ            SDR_R(0x054)
-/* lowpwr_ack at 0x58 */
 #define SDR_STATICCFG           SDR_R(0x05C)
 #define SDR_CTRLWIDTH           SDR_R(0x060)
 #define SDR_CPORTWIDTH          SDR_R(0x064)
@@ -105,24 +97,24 @@
 #define SDR_RFIFOCMAP           SDR_R(0x070)
 #define SDR_WFIFOCMAP           SDR_R(0x074)
 #define SDR_CPORTRDWR           SDR_R(0x078)
-#define SDR_PORTCFG             SDR_R(0x07C)
-/* fpgaport_rst at 0x80, padding1 at 0x84 */
-#define SDR_FIFOCFG             SDR_R(0x088)
-/* protport_default at 0x8C, prot_rules at 0x90-0x9C */
-/* padding2[3] at 0xA0-0xA8 */
-#define SDR_MPPRIORITY          SDR_R(0x0AC)
-#define SDR_MPWEIGHT0           SDR_R(0x0B0)
-#define SDR_MPWEIGHT1           SDR_R(0x0B4)
-#define SDR_MPWEIGHT2           SDR_R(0x0B8)
-#define SDR_MPWEIGHT3           SDR_R(0x0BC)
-#define SDR_MPPACING0           SDR_R(0x0C0)
-#define SDR_MPPACING1           SDR_R(0x0C4)
-#define SDR_MPPACING2           SDR_R(0x0C8)
-#define SDR_MPPACING3           SDR_R(0x0CC)
-#define SDR_MPTHRESHOLD0        SDR_R(0x0D0)
-#define SDR_MPTHRESHOLD1        SDR_R(0x0D4)
-#define SDR_MPTHRESHOLD2        SDR_R(0x0D8)
-/* padding3[29] at 0xDC-0x14C */
+#define SDR_LOWPWR_EQ           SDR_R(0x054)
+#define SDR_PROTPORT_DEFAULT    SDR_R(0x08C)
+#define SDR_PROT_RULE_ADDR      SDR_R(0x090)
+#define SDR_PROT_RULE_ID        SDR_R(0x094)
+#define SDR_PROT_RULE_DATA      SDR_R(0x098)
+#define SDR_PROT_RULE_RDWR      SDR_R(0x09C)
+#define SDR_MP_PRIORITY         SDR_R(0x0AC)
+#define SDR_MP_WEIGHT0          SDR_R(0x0B0)
+#define SDR_MP_WEIGHT1          SDR_R(0x0B4)
+#define SDR_MP_WEIGHT2          SDR_R(0x0B8)
+#define SDR_MP_WEIGHT3          SDR_R(0x0BC)
+#define SDR_MP_PACING0          SDR_R(0x0C0)
+#define SDR_MP_PACING1          SDR_R(0x0C4)
+#define SDR_MP_PACING2          SDR_R(0x0C8)
+#define SDR_MP_PACING3          SDR_R(0x0CC)
+#define SDR_MP_THRESHOLD0       SDR_R(0x0D0)
+#define SDR_MP_THRESHOLD1       SDR_R(0x0D4)
+#define SDR_MP_THRESHOLD2       SDR_R(0x0D8)
 #define SDR_PHYCTRL0            SDR_R(0x150)
 
 #define SDR_STATICCFG_APPLYCFG  (1U << 3)
@@ -140,12 +132,40 @@
 #define SCANMGR_STAT_ACTIVE     (1U << 31)
 #define SCANMGR_STAT_WFIFOCNT   0x70000000U
 
-/* System Manager: 0xFFD08000
- * Freeze controller struct at +0x40:
- *   vioctrl(+0), padding[3](+4,+8,+12), hioctrl(+16), src(+20), hwctrl(+24)
+/* Reset Manager: 0xFFD05000 */
+#define RSTMGR_BASE             0xFFD05000U
+#define RSTMGR_PERMODRST        (*(volatile uint32_t*)(RSTMGR_BASE + 0x14U))
+#define RSTMGR_PERMODRST_SDR    (1U << 29)
+
+/* System Manager: 0xFFD08000 */
+#define SYSMGR_BASE             0xFFD08000U
+
+/* Freeze controller (SYSMGR+0x40):
+ *   vioctrl(+0x00), padding(+0x04..0x0C), hioctrl(+0x10), src(+0x14)
  */
-#define FRZCTRL_HIOCTRL         (*(volatile uint32_t*)(0xFFD08000U + 0x40U + 0x10U))
-#define FRZCTRL_HIOCTRL_DLLRST  (1U << 5)
+#define FRZCTRL_HIOCTRL             (*(volatile uint32_t*)(SYSMGR_BASE + 0x50U))
+#define FRZCTRL_SRC                 (*(volatile uint32_t*)(SYSMGR_BASE + 0x54U))
+#define FRZCTRL_HIOCTRL_OCT_CALSTART    (1U << 8)
+#define FRZCTRL_HIOCTRL_REGRST          (1U << 7)
+#define FRZCTRL_HIOCTRL_OCTRST          (1U << 6)
+#define FRZCTRL_HIOCTRL_DLLRST          (1U << 5)
+#define FRZCTRL_HIOCTRL_SLEW            (1U << 4)
+#define FRZCTRL_HIOCTRL_WKPULLUP        (1U << 3)
+#define FRZCTRL_HIOCTRL_TRISTATE        (1U << 2)
+#define FRZCTRL_HIOCTRL_BUSHOLD         (1U << 1)
+#define FRZCTRL_HIOCTRL_CFG             (1U << 0)
+
+/* ROM code group control: warmrstcfgio lets IOCSR writes take effect */
+#define SYSMGR_ROMCODE_CTRL         (*(volatile uint32_t*)(SYSMGR_BASE + 0xC0U))
+#define SYSMGR_ROMCODE_WARMRSTCFGIO (1U << 1)
+
+/* NIC-301 L3 interconnect remap: bit 0 = mpuzero (route 0x0..SDRAM_SIZE to SDRAM) */
+#define NIC301_REMAP            (*(volatile uint32_t*)0xFF800000U)
+
+/* PL310 L2 cache controller (routes 0x0..filter_end to M1 = SDRAM AXI port) */
+#define PL310_BASE              0xFFFEF000U
+#define PL310_FILTER_START      (*(volatile uint32_t *)(PL310_BASE + 0xC00U))
+#define PL310_FILTER_END        (*(volatile uint32_t *)(PL310_BASE + 0xC04U))
 
 void pll_init(void);
 void scan_mgr_init(void);

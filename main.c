@@ -50,7 +50,7 @@ static void gic_init(void)
 
 void c_reset_handler(void)
 {
-    VECTOR_FLAG = 0x00;
+    VECTOR_FLAG = 0x80;
 }
 
 
@@ -104,28 +104,31 @@ void c_fiq_handler(int id)
 
 
 
-///////////////////////////////////////////// SDRAM TEST ////////////////////////////////////////////////////
+///////////////////////////////////////////// SDRAM TEST ////////////////////////////////
+#define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
+#define SDRAM_TEST_WORDS 64
 
-// #define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
-// #define SDRAM_TEST_WORDS (256 * 1024)  /* 1MB */
-//
-// static void sdram_test(void)
-// {
-//     volatile uint32_t *p = SDRAM_BASE;
-//
-//     for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++)
-//         p[i] = i;
-//
-//     for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
-//         if (p[i] != i) {
-//             SDRAM_TEST_RESULT = (uint32_t)&p[i];  /* first failing address */
-//             return;
-//         }
-//     }
-//
-//     SDRAM_TEST_RESULT = 0xDEAD0000;  /* pass sentinel */
-// }
-//
+static void sdram_test(void)
+{
+    volatile uint32_t *p = SDRAM_BASE;
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++)
+        p[i] = i;
+
+    __asm__ volatile ("dsb" ::: "memory");
+    GENERAL_FLAG = 0xA002;  /* writes done */
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
+        if (p[i] != i) {
+            SDRAM_TEST_RESULT = (uint32_t)&p[i];
+            GENERAL_FLAG = 0x813;
+            return;
+        }
+    }
+
+    GENERAL_FLAG = 0x814;
+    SDRAM_TEST_RESULT = 0xDEAD0000;
+}
 
 
 ////////////////////////////// Sched test /////////////////////////////////////////
@@ -148,14 +151,17 @@ static void task2_dummy(void)
 
 
 
-///////////////////////////////////////////// MAIN LOOP ////////////////////////////////////////////////////
-
+///////////////////////////////////////////// MAIN LOOP /////////////////////////////
 void main(void)
 {
     pll_init();
     scan_mgr_init();
-    // sdram_ctrl_init();
-    // sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    sdram_ctrl_init();
+    SDRAM_TEST_RESULT = (uint32_t)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
+    PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
+    NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
+    GENERAL_FLAG = 0xBB01;
 
     heap_init();
     sched_init();
@@ -163,7 +169,7 @@ void main(void)
 
     gic_init();
     gtimer_init();
-    // sdram_test();
+    sdram_test();
 
 
     uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
@@ -176,11 +182,11 @@ void main(void)
     task_t task1 = {0};
     task_t task2 = {0};
 
-    task1.period = 100;
+    task1.period = 1;
     task1.id = 1;
     task1.func = task1_dummy;
 
-    task2.period = 200;
+    task2.period = 2;
     task2.id = 2;
     task2.func = task2_dummy;
     

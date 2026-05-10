@@ -4,6 +4,7 @@
 #include "pll_config.h"
 #include "sdram_config.h"
 #include "iocsr_config.h"
+#include "flags.h"
 
 /* ---- helpers ---- */
 
@@ -320,31 +321,49 @@ err:
 
 void scan_mgr_init(void)
 {
+    uint32_t v;
+
+    /* Enable IOCSR programming writes */
+    SYSMGR_ROMCODE_CTRL |= SYSMGR_ROMCODE_WARMRSTCFGIO;
+
     program_chain(0, iocsr_scan_chain0_table, CFG_HPS_IOCSR_SCANCHAIN0_LENGTH);
     program_chain(1, iocsr_scan_chain1_table, CFG_HPS_IOCSR_SCANCHAIN1_LENGTH);
     program_chain(2, iocsr_scan_chain2_table, CFG_HPS_IOCSR_SCANCHAIN2_LENGTH);
     program_chain(3, iocsr_scan_chain3_table, CFG_HPS_IOCSR_SCANCHAIN3_LENGTH);
+
+    SYSMGR_ROMCODE_CTRL &= ~SYSMGR_ROMCODE_WARMRSTCFGIO;
+
+    /* Full HIO thaw: mirrors sys_mgr_frzctrl_thaw_req() channel 3.
+     * Enables DDR I/O OCT termination — required before PHY calibration. */
+    FRZCTRL_SRC = 0;                                 /* SW-controlled FSM */
+    /* DLLRST already cleared in program_chain(3) */
+    FRZCTRL_HIOCTRL |= FRZCTRL_HIOCTRL_OCT_CALSTART; /* start OCT bias/cal */
+    spin(10000);                                      /* ~40µs @ 25MHz eosc1 */
+    v = FRZCTRL_HIOCTRL;
+    v = (v | FRZCTRL_HIOCTRL_BUSHOLD | FRZCTRL_HIOCTRL_CFG)
+      & ~FRZCTRL_HIOCTRL_OCTRST;
+    FRZCTRL_HIOCTRL = v;
+    spin(2000);                                       /* 33 intosc ≈ 1µs */
+    FRZCTRL_HIOCTRL |= FRZCTRL_HIOCTRL_WKPULLUP | FRZCTRL_HIOCTRL_TRISTATE;
+    FRZCTRL_HIOCTRL &= ~FRZCTRL_HIOCTRL_REGRST;
+    FRZCTRL_HIOCTRL |= FRZCTRL_HIOCTRL_SLEW;
 }
 
 /* ---- SDRAM controller register load ---- */
 
-/*
- * Derived from sdr_load_regs() / sdram_mmr_init_full() in sdram_gen5.c.
- *
- * Errata: set ROWBITS to log2(4GB / cs / bus_bytes / banks / cols)
- * so the controller covers the full address space.
- * For DE1-SoC (CS=1, 8-bit device, BANKBITS=3, COLBITS=10):
- *   errata_rows = log2(4G / 1 / 1 / 8 / 1024) = log2(524288) = 19
- */
+/* ROWBITS errata: override to 19 so controller covers full 32-bit space. */
 #define SDR_ERRATA_ROWS     19U
 
 void sdram_ctrl_init(void)
 {
-    /* ctrl_cfg: ADDRORDER forced to 0 (CS=1 errata) */
+    /* SDR controller + PHY are held in reset at power-on (PERMODRST bit 29 = 1).
+     * Must deassert before any SDR register writes. */
+    RSTMGR_PERMODRST &= ~RSTMGR_PERMODRST_SDR;
+
     SDR_CTRLCFG =
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_CTRLCFG_MEMTYPE    <<  0) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_CTRLCFG_MEMBL      <<  3) |
-        (0U                                                <<  8) | /* ADDRORDER forced 0 */
+        (0U                                                <<  8) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_CTRLCFG_ECCEN      << 10) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_CTRLCFG_ECCCORREN  << 11) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_CTRLCFG_REORDEREN  << 15) |
@@ -368,9 +387,9 @@ void sdram_ctrl_init(void)
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING2_IF_TWTR  << 25);
 
     SDR_DRAMTIMING3 =
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRTP << 0) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRAS << 4) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRC  << 9) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRTP <<  0) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRAS <<  4) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TRC  <<  9) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TMRD << 15) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMTIMING3_TCCD << 19);
 
@@ -382,53 +401,22 @@ void sdram_ctrl_init(void)
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_LOWPWRTIMING_AUTOPDCYCLES     <<  0) |
         ((uint32_t)CFG_HPS_SDR_CTRLCFG_LOWPWRTIMING_CLKDISABLECYCLES << 16);
 
-    SDR_DRAMODT =
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMODT_WRITE << 0) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMODT_READ  << 4);
-
-    SDR_EXTRATIME1 =
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_EXTRATIME1_CFG_EXTRA_CTL_CLK_RD_TO_WR      << 20) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_EXTRATIME1_CFG_EXTRA_CTL_CLK_RD_TO_WR_BC  << 24) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_EXTRATIME1_CFG_EXTRA_CTL_CLK_RD_TO_WR_DIFF_CHIP << 28);
-
-    /* dram_addrw with errata: ROWBITS overridden to 19 */
     SDR_DRAMADDRW =
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMADDRW_COLBITS                <<  0) |
-        (SDR_ERRATA_ROWS                                                  <<  5) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMADDRW_BANKBITS                << 10) |
-        ((uint32_t)(CFG_HPS_SDR_CTRLCFG_DRAMADDRW_CSBITS - 1U)          << 13);
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMADDRW_COLBITS           <<  0) |
+        (SDR_ERRATA_ROWS                                             <<  5) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMADDRW_BANKBITS           << 10) |
+        ((uint32_t)(CFG_HPS_SDR_CTRLCFG_DRAMADDRW_CSBITS - 1U)     << 13);
 
     SDR_DRAMIFWIDTH  = CFG_HPS_SDR_CTRLCFG_DRAMIFWIDTH_IFWIDTH;
     SDR_DRAMDEVWIDTH = CFG_HPS_SDR_CTRLCFG_DRAMDEVWIDTH_DEVWIDTH;
-    SDR_DRAMINTR     = CFG_HPS_SDR_CTRLCFG_DRAMINTR_INTREN;
-    SDR_LOWPWREQ     = ((uint32_t)CFG_HPS_SDR_CTRLCFG_LOWPWREQ_SELFRFSHMASK << 4);
 
     SDR_STATICCFG =
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_STATICCFG_MEMBL         << 0) |
-        ((uint32_t)CFG_HPS_SDR_CTRLCFG_STATICCFG_USEECCASDATA  << 2);
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_STATICCFG_MEMBL        << 0) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_STATICCFG_USEECCASDATA << 2);
 
-    SDR_CTRLWIDTH  = CFG_HPS_SDR_CTRLCFG_CTRLWIDTH_CTRLWIDTH;
-    SDR_PORTCFG    = ((uint32_t)CFG_HPS_SDR_CTRLCFG_PORTCFG_AUTOPCHEN << 10);
-    SDR_FIFOCFG    = ((uint32_t)CFG_HPS_SDR_CTRLCFG_FIFOCFG_SYNCMODE  <<  0)
-                   | ((uint32_t)CFG_HPS_SDR_CTRLCFG_FIFOCFG_INCSYNC   << 10);
+    SDR_CTRLWIDTH = CFG_HPS_SDR_CTRLCFG_CTRLWIDTH_CTRLWIDTH;
 
-    SDR_MPPRIORITY  = CFG_HPS_SDR_CTRLCFG_MPPRIORITY_USERPRIORITY;
-
-    SDR_MPWEIGHT0 = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_0_STATICWEIGHT_31_0;
-    SDR_MPWEIGHT1 = (CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_1_STATICWEIGHT_49_32 <<  0)
-                  | (CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_1_SUMOFWEIGHT_13_0   << 18);
-    SDR_MPWEIGHT2 = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_2_SUMOFWEIGHT_45_14;
-    SDR_MPWEIGHT3 = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_3_SUMOFWEIGHT_63_46;
-
-    SDR_MPPACING0 = CFG_HPS_SDR_CTRLCFG_MPPACING_0_THRESHOLD1_31_0;
-    SDR_MPPACING1 = (CFG_HPS_SDR_CTRLCFG_MPPACING_1_THRESHOLD1_59_32 <<  0)
-                  | (CFG_HPS_SDR_CTRLCFG_MPPACING_1_THRESHOLD2_3_0   << 28);
-    SDR_MPPACING2 = CFG_HPS_SDR_CTRLCFG_MPPACING_2_THRESHOLD2_35_4;
-    SDR_MPPACING3 = CFG_HPS_SDR_CTRLCFG_MPPACING_3_THRESHOLD2_59_36;
-
-    SDR_MPTHRESHOLD0 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_0_THRESHOLDRSTCYCLES_31_0;
-    SDR_MPTHRESHOLD1 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_1_THRESHOLDRSTCYCLES_63_32;
-    SDR_MPTHRESHOLD2 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_2_THRESHOLDRSTCYCLES_79_64;
+    SDR_PHYCTRL0 = CFG_HPS_SDR_CTRLCFG_PHYCTRL_PHYCTRL_0;
 
     SDR_CPORTWIDTH = CFG_HPS_SDR_CTRLCFG_CPORTWIDTH_CPORTWIDTH;
     SDR_CPORTWMAP  = CFG_HPS_SDR_CTRLCFG_CPORTWMAP_CPORTWMAP;
@@ -437,8 +425,26 @@ void sdram_ctrl_init(void)
     SDR_WFIFOCMAP  = CFG_HPS_SDR_CTRLCFG_WFIFOCMAP_WFIFOCMAP;
     SDR_CPORTRDWR  = CFG_HPS_SDR_CTRLCFG_CPORTRDWR_CPORTRDWR;
 
-    SDR_PHYCTRL0   = CFG_HPS_SDR_CTRLCFG_PHYCTRL_PHYCTRL_0;
+    SDR_DRAMODT =
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMODT_WRITE << 0) |
+        ((uint32_t)CFG_HPS_SDR_CTRLCFG_DRAMODT_READ  << 4);
 
-    /* Apply configuration. */
+    SDR_LOWPWR_EQ    = ((uint32_t)CFG_HPS_SDR_CTRLCFG_LOWPWREQ_SELFRFSHMASK << 4);
+
+    SDR_MP_PRIORITY  = CFG_HPS_SDR_CTRLCFG_MPPRIORITY_USERPRIORITY;
+    SDR_MP_WEIGHT0   = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_0_STATICWEIGHT_31_0;
+    SDR_MP_WEIGHT1   = ((uint32_t)CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_1_STATICWEIGHT_49_32 << 0) |
+                       ((uint32_t)CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_1_SUMOFWEIGHT_13_0   << 18);
+    SDR_MP_WEIGHT2   = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_2_SUMOFWEIGHT_45_14;
+    SDR_MP_WEIGHT3   = CFG_HPS_SDR_CTRLCFG_MPWIEIGHT_3_SUMOFWEIGHT_63_46;
+    SDR_MP_PACING0   = CFG_HPS_SDR_CTRLCFG_MPPACING_0_THRESHOLD1_31_0;
+    SDR_MP_PACING1   = ((uint32_t)CFG_HPS_SDR_CTRLCFG_MPPACING_1_THRESHOLD1_59_32 << 0) |
+                       ((uint32_t)CFG_HPS_SDR_CTRLCFG_MPPACING_1_THRESHOLD2_3_0   << 28);
+    SDR_MP_PACING2   = CFG_HPS_SDR_CTRLCFG_MPPACING_2_THRESHOLD2_35_4;
+    SDR_MP_PACING3   = CFG_HPS_SDR_CTRLCFG_MPPACING_3_THRESHOLD2_59_36;
+    SDR_MP_THRESHOLD0 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_0_THRESHOLDRSTCYCLES_31_0;
+    SDR_MP_THRESHOLD1 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_1_THRESHOLDRSTCYCLES_63_32;
+    SDR_MP_THRESHOLD2 = CFG_HPS_SDR_CTRLCFG_MPTHRESHOLDRST_2_THRESHOLDRSTCYCLES_79_64;
+
     SDR_STATICCFG |= SDR_STATICCFG_APPLYCFG;
 }

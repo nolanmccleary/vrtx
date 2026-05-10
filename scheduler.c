@@ -16,9 +16,10 @@ static task_t tasks[MAX_NUM_TASKS] = {0};
 
 void sched_init(void)
 {
+    num_tasks = 0;
     for(size_t i = 0; i < MAX_NUM_TASKS; i++)
     {
-        task_t task = {0, 0, 0, false, NULL}; 
+        task_t task = {0, 0, 0, false, NULL};
         tasks[i] = task;
     }
 }

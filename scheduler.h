@@ -1,7 +1,8 @@
 #ifndef __SCHEDULER_H_
 #define __SCHEDULER_H_
 
-#include "stdint.h"
+#include <stdint.h>
+#include <stdbool.h>
 
 
 #define MAX_NUM_TASKS 10
