@@ -5,7 +5,7 @@ OBJCOPY := $(CROSS)-objcopy
 FLAGS   := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Iboot
 LIBGCC  := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
 
-SRCS    := startup.s main.c allocator.c scheduler.c preempt_sched.c boot/boot.c boot/sequencer.c
+SRCS    := startup.s main.c allocator.c preempt_sched.c boot/boot.c boot/sequencer.c
 
 all: build/qlonq.elf build/qlonq.bin
 

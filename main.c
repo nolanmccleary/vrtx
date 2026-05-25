@@ -3,7 +3,6 @@
 #include "allocator.h"
 #include "boot/boot.h"
 #include "flags.h"
-#include "scheduler.h"
 #include "preempt_sched.h"
 #include "boot/sequencer.h"
 
@@ -88,7 +87,6 @@ void c_irq_handler(int id)
             WDT_L4 = 0x76; //old yeller his ass
             GTIMER_ISR = 1;
             TICK_MIRROR++;
-            gTick++;
             next_thread();
             break;
 
@@ -138,18 +136,6 @@ static void sdram_test(void)
 
 
 
-static void task1_dummy(void)
-{
-    SCHED_COUNT_1++;
-}
-
-
-static void task2_dummy(void)
-{
-    SCHED_COUNT_2++;
-}
-
-
 static sys_exit_e pthread1(thread_status_e* status)
 {
     (void)status;
@@ -184,7 +170,6 @@ void main(void)
     GENERAL_FLAG = 0xBB01;
 
     heap_init();
-    sched_init();
     psched_init();
     add_thread(pthread1, HIGH, 1);
     add_thread(pthread2, HIGH, 2);
@@ -205,23 +190,8 @@ void main(void)
     *test3 = 0x67;
     VECTOR_FLAG = 0x1F;
 
-    task_t task1 = {0};
-    task_t task2 = {0};
-
-    task1.period = 1;
-    task1.id = 1;
-    task1.func = task1_dummy;
-
-    task2.period = 2;
-    task2.id = 2;
-    task2.func = task2_dummy;
-    
-    add_task(task1);
-    add_task(task2);
-
-    while (1) 
+    while (1)
     {
-        task_handler();
         ALLOC_CHECK = *test3;
         GENERAL_FLAG = 0x69;
     }
