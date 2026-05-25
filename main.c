@@ -150,6 +150,24 @@ static void task2_dummy(void)
 }
 
 
+static sys_exit_e pthread1(thread_status_e* status)
+{
+    (void)status;
+    while (1)
+        THREAD_COUNT_1++;
+    return SYS_OK;
+}
+
+
+static sys_exit_e pthread2(thread_status_e* status)
+{
+    (void)status;
+    while (1)
+        THREAD_COUNT_2++;
+    return SYS_OK;
+}
+
+
 
 
 
@@ -168,7 +186,8 @@ void main(void)
     heap_init();
     sched_init();
     psched_init();
-
+    add_thread(pthread1, HIGH, 1);
+    add_thread(pthread2, HIGH, 2);
 
     gic_init();
     gtimer_init();

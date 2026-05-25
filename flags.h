@@ -13,5 +13,7 @@ extern char _status_base;
 #define GENERAL_FLAG        (*((volatile uint32_t*)&_status_base + 6))
 #define NUM_THREADS         (*((volatile uint32_t*)&_status_base + 7))
 #define NUM_RUNNING         (*((volatile uint32_t*)&_status_base + 8))
+#define THREAD_COUNT_1      (*((volatile uint32_t*)&_status_base + 9))
+#define THREAD_COUNT_2      (*((volatile uint32_t*)&_status_base + 10))
 
 #endif
