@@ -11,5 +11,7 @@ extern char _status_base;
 #define SCHED_COUNT_1       (*((volatile uint32_t*)&_status_base + 4))
 #define SCHED_COUNT_2       (*((volatile uint32_t*)&_status_base + 5))
 #define GENERAL_FLAG        (*((volatile uint32_t*)&_status_base + 6))
+#define NUM_THREADS         (*((volatile uint32_t*)&_status_base + 7))
+#define NUM_RUNNING         (*((volatile uint32_t*)&_status_base + 8))
 
 #endif

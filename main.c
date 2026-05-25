@@ -4,6 +4,7 @@
 #include "boot/boot.h"
 #include "flags.h"
 #include "scheduler.h"
+#include "preempt_sched.h"
 #include "boot/sequencer.h"
 
 
@@ -88,6 +89,7 @@ void c_irq_handler(int id)
             GTIMER_ISR = 1;
             TICK_MIRROR++;
             gTick++;
+            next_thread();
             break;
 
         default:
@@ -165,6 +167,7 @@ void main(void)
 
     heap_init();
     sched_init();
+    psched_init();
 
 
     gic_init();
@@ -175,6 +178,10 @@ void main(void)
     uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
     uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
     uint32_t* test3 = (uint32_t*)kMalloc(sizeof(uint32_t));
+
+    kFree(test1);
+    kFree(test2);
+    kFree(test3);
 
     *test3 = 0x67;
     VECTOR_FLAG = 0x1F;

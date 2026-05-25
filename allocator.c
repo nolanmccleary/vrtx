@@ -1,6 +1,8 @@
 #include <stddef.h>
 #include "allocator.h"
 
+
+
 void *memset(void *s, int c, size_t n)
 {
     unsigned char *p = s;
@@ -20,7 +22,7 @@ typedef struct heap_entry
 
 
 static heap_entry* _head = NULL;
-
+static bool heap_initialized = false;
 
 void heap_init(void)
 {
@@ -28,11 +30,20 @@ void heap_init(void)
     _head->next = NULL;
     _head->is_free = true;
     _head->size = HEAP_SIZE - sizeof(heap_entry);
+    heap_initialized = true;
+}
+
+
+void heap_deinit(void)
+{
+    heap_initialized = false; 
 }
 
 
 void* kMalloc(uint32_t size)
 {
+    if(!heap_initialized) heap_init();
+
     heap_entry* node = _head;
     while(node != NULL)
     {

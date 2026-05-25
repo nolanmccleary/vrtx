@@ -10,13 +10,25 @@ MEMORY {
 }
 
 _stack_size = 0x2000;   /* 8KB for each stack */
+_bank_size = 0x80; /*128 tasks */
+
+_heap_offset = 0x200000; /* 1MB offset */
 _heap_size = 0x01000000; /* 16MB heap */
-_heap_offset = 0x100000; /* 1MB offset */
 _capture_region = 0x80;
 
 SECTIONS {
+    .pc_bank ORIGIN(SDRAM) (NOLOAD) : {
+        
+    }
 
-    .heap ORIGIN(SDRAM) + _heap_offset (NOLOAD) : {
+    .task_bank ORIGIN(SDRAM) (NOLOAD) : { /* Max 128 tasks */
+        . = ALIGN(8);
+        _bank_start = .;
+        . = . + _heap_offset;
+        _bank_end = .;
+    }
+
+    .heap _bank_end (NOLOAD) : {
         . = ALIGN(8);
         _heap_start = .;
         . = . + _heap_size;
