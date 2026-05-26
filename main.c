@@ -154,6 +154,16 @@ static sys_exit_e pthread2(thread_status_e* status)
 }
 
 
+static sys_exit_e pthread3(thread_status_e* status)
+{
+    while (TICK_MIRROR < 30000)
+        THREAD_COUNT_3++;
+    *status = FINISHED;
+    while (1);
+    return SYS_OK;
+}
+
+
 
 
 
@@ -173,6 +183,7 @@ void main(void)
     psched_init();
     add_thread(pthread1, HIGH, 1);
     add_thread(pthread2, HIGH, 2);
+    add_thread(pthread3, HIGH, 3);
 
     gic_init();
     gtimer_init();
@@ -192,6 +203,7 @@ void main(void)
 
     while (1)
     {
+        clean_pool();
         ALLOC_CHECK = *test3;
         GENERAL_FLAG = 0x69;
     }

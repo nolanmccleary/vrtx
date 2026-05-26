@@ -88,6 +88,7 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), thread_crit_e
 
                 thread_pool[i].id = id;
                 num_threads++;
+                NUM_THREADS = num_threads;
                 return SYS_OK;
             }
         }
@@ -129,11 +130,12 @@ void clean_pool(void)
         thread_wrapper_t* thread = &thread_pool[i];
         if(thread->available == UNAVAILABLE && thread->thread->thread_status == FINISHED)
         {
-            kFree(thread->thread);
-            thread->thread = NULL;
+            thread_t* to_free = thread->thread;
             thread->available = AVAILABLE;
+            thread->thread = NULL;
             num_threads--;
             num_running--;
+            kFree(to_free);
         }
     }
 

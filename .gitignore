@@ -1,3 +1,4 @@
 build/
 u-boot-socfpga/
 myenv/
+gmon.out
