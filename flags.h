@@ -1,6 +1,11 @@
 #ifndef __FLAGS_H_
 #define __FLAGS_H_
 
+#ifdef FLAGS_ENABLED
+#define FLAG_WRITE(reg, val) ((reg) = (val))
+#else
+#define FLAG_WRITE(reg, val) ((void)0)
+#endif
 
 extern char _status_base;
 

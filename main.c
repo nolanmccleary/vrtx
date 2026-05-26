@@ -6,6 +6,10 @@
 #include "preempt_sched.h"
 #include "boot/sequencer.h"
 
+#if ENABLE_DCACHE && !ENABLE_MMU
+#error ENABLE_DCACHE requires ENABLE_MMU
+#endif
+
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
 #define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
@@ -23,12 +27,11 @@
 #define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
 
 
-
 static void gtimer_init(void)
 {
     GTIMER_CTRL    = 0;
     GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 199999;                    //400k counts/tick. 1000Hz if timer fires at 400k
+    GTIMER_AUTOINC = 199999;
     GTIMER_CMPL    = GTIMER_CNTRL + 199999;
     GTIMER_CMPH    = GTIMER_CNTRH;
     GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
@@ -47,46 +50,45 @@ static void gic_init(void)
 /////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
 
 
-
 void c_reset_handler(void)
 {
-    VECTOR_FLAG = 0x80;
+    FLAG_WRITE(VECTOR_FLAG, 0x80);
 }
 
 
 void c_undef_handler(void)
 {
-    VECTOR_FLAG = 0x04;
+    FLAG_WRITE(VECTOR_FLAG, 0x04);
 }
 
 
 void c_swi_handler(void)
 {
-    VECTOR_FLAG = 0x08;
+    FLAG_WRITE(VECTOR_FLAG, 0x08);
 }
 
 
 void c_prefetch_handler(void)
 {
-    VECTOR_FLAG = 0x0C;
+    FLAG_WRITE(VECTOR_FLAG, 0x0C);
 }
 
 
 void c_data_handler(void)
 {
-    VECTOR_FLAG = 0x10;
+    FLAG_WRITE(VECTOR_FLAG, 0x10);
 }
 
 
 void c_irq_handler(int id)
 {
-    VECTOR_FLAG = 0x18;
+    FLAG_WRITE(VECTOR_FLAG, 0x18);
     switch(id)
     {
-        case 0x1b: //gtimer interrupt
-            WDT_L4 = 0x76; //old yeller his ass
+        case 0x1b:
+            WDT_L4 = 0x76;
             GTIMER_ISR = 1;
-            TICK_MIRROR++;
+            FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
             next_thread();
             break;
 
@@ -98,14 +100,16 @@ void c_irq_handler(int id)
 
 void c_fiq_handler(int id)
 {
-    VECTOR_FLAG = 0x1C;
+    FLAG_WRITE(VECTOR_FLAG, 0x1C);
     (void)id;
 }
 
 
+///////////////////////////////////////////// MMU INIT /////////////////////////////
 
 static void mmu_init(void)
 {
+#if ENABLE_MMU
     volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
     uint32_t r;
 
@@ -115,6 +119,13 @@ static void mmu_init(void)
 
     uint32_t ttbr = 0x00100000u;
     uint32_t dacr = 0x55555555u;
+    uint32_t sctlr_bits = 0x1u;  /* M = MMU */
+#if ENABLE_DCACHE
+    sctlr_bits |= 0x4u;          /* C = D-cache */
+#endif
+#if ENABLE_ICACHE
+    sctlr_bits |= 0x1000u;       /* I = I-cache */
+#endif
     __asm__ volatile (
         "mov     %0, #0\n\t"
         "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0 */
@@ -122,15 +133,23 @@ static void mmu_init(void)
         "mcr     p15, 0, %2, c3, c0, 0\n\t"   /* DACR = all client */
         "dsb\n\t"
         "mrc     p15, 0, %0, c1, c0, 0\n\t"
-        "orr     %0, %0, #0x1\n\t"             /* MMU enable */
-        "orr     %0, %0, #0x4\n\t"             /* D-cache */
-        "orr     %0, %0, #0x1000\n\t"          /* I-cache */
+        "orr     %0, %0, %3\n\t"
         "mcr     p15, 0, %0, c1, c0, 0\n\t"
         "isb\n"
         : "=&r"(r)
-        : "r"(ttbr), "r"(dacr)
+        : "r"(ttbr), "r"(dacr), "r"(sctlr_bits)
         : "memory"
     );
+#elif ENABLE_ICACHE
+    uint32_t r;
+    __asm__ volatile (
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"
+        "orr     %0, %0, #0x1000\n\t"          /* I = I-cache (no MMU needed) */
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "isb\n"
+        : "=&r"(r) : : "memory"
+    );
+#endif
 }
 
 
@@ -146,25 +165,22 @@ static void sdram_test(void)
         p[i] = i;
 
     __asm__ volatile ("dsb" ::: "memory");
-    GENERAL_FLAG = 0xA002;  /* writes done */
+    FLAG_WRITE(GENERAL_FLAG, 0xA002);
 
     for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
         if (p[i] != i) {
-            SDRAM_TEST_RESULT = (uint32_t)&p[i];
-            GENERAL_FLAG = 0x813;
+            FLAG_WRITE(SDRAM_TEST_RESULT, (uint32_t)&p[i]);
+            FLAG_WRITE(GENERAL_FLAG, 0x813);
             return;
         }
     }
 
-    GENERAL_FLAG = 0x814;
-    SDRAM_TEST_RESULT = 0xDEAD0000;
+    FLAG_WRITE(GENERAL_FLAG, 0x814);
+    FLAG_WRITE(SDRAM_TEST_RESULT, 0xDEAD0000);
 }
 
 
 ////////////////////////////// Sched test /////////////////////////////////////////
-
-
-
 
 static sys_exit_e pthread1(thread_status_e* status)
 {
@@ -194,32 +210,38 @@ static sys_exit_e pthread3(thread_status_e* status)
 }
 
 
+///////////////////////////////////////////// STARTUP /////////////////////////////
 
-
-
-///////////////////////////////////////////// MAIN LOOP /////////////////////////////
-void main(void)
+void c_startup(void)
 {
+#ifdef BOARD_DE1_SOC
     pll_init();
     scan_mgr_init();
     sdram_ctrl_init();
-    SDRAM_TEST_RESULT = (uint32_t)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    uint32_t cal = (uint32_t)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    FLAG_WRITE(SDRAM_TEST_RESULT, cal);
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
     NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
+#endif
     mmu_init();
-    GENERAL_FLAG = 0xBB01;
-
+    FLAG_WRITE(GENERAL_FLAG, 0xBB01);
     heap_init();
     psched_init();
+    gic_init();
+    gtimer_init();
+}
+
+
+///////////////////////////////////////////// MAIN LOOP /////////////////////////////
+
+void main(void)
+{
     add_thread(pthread1, HIGH, 1);
     add_thread(pthread2, HIGH, 2);
     add_thread(pthread3, HIGH, 3);
 
-    gic_init();
-    gtimer_init();
     sdram_test();
-
 
     uint32_t* test1 = (uint32_t*)kMalloc(sizeof(uint32_t));
     uint32_t* test2 = (uint32_t*)kMalloc(sizeof(uint32_t));
@@ -230,12 +252,12 @@ void main(void)
     kFree(test3);
 
     *test3 = 0x67;
-    VECTOR_FLAG = 0x1F;
+    FLAG_WRITE(VECTOR_FLAG, 0x1F);
 
     while (1)
     {
         clean_pool();
-        ALLOC_CHECK = *test3;
-        GENERAL_FLAG = 0x69;
+        FLAG_WRITE(ALLOC_CHECK, *test3);
+        FLAG_WRITE(GENERAL_FLAG, 0x69);
     }
 }

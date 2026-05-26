@@ -88,13 +88,13 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), thread_crit_e
 
                 thread_pool[i].id = id;
                 num_threads++;
-                NUM_THREADS = num_threads;
+                FLAG_WRITE(NUM_THREADS, num_threads);
                 return SYS_OK;
             }
         }
     }
     
-    NUM_THREADS = num_threads;
+    FLAG_WRITE(NUM_THREADS, num_threads);
 
     return SYS_ERROR;
 }
@@ -116,7 +116,7 @@ sys_exit_e free_thread(uint32_t id)
         }
     }
 
-    NUM_THREADS = num_threads;
+    FLAG_WRITE(NUM_THREADS, num_threads);
 
     return SYS_ERROR;
 }
@@ -139,8 +139,8 @@ void clean_pool(void)
         }
     }
 
-    NUM_THREADS = num_threads;
-    NUM_RUNNING = num_running;
+    FLAG_WRITE(NUM_THREADS, num_threads);
+    FLAG_WRITE(NUM_RUNNING, num_running);
 }
 
 
@@ -170,7 +170,7 @@ static inline void start_thread(thread_t* thread)
     thread->thread_status = RUNNING;
 
     num_running++;
-    NUM_RUNNING = num_running;
+    FLAG_WRITE(NUM_RUNNING, num_running);
 }
 
 
