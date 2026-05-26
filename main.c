@@ -104,6 +104,36 @@ void c_fiq_handler(int id)
 
 
 
+static void mmu_init(void)
+{
+    volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
+    uint32_t r;
+
+    for (int i = 4095; i >= 1; i--)
+        ttb[i] = ((uint32_t)i << 20) | 0x0DE2u;
+    ttb[0] = 0x00015DE6u;  /* section 0: normal, WBWA, shareable */
+
+    uint32_t ttbr = 0x00100000u;
+    uint32_t dacr = 0x55555555u;
+    __asm__ volatile (
+        "mov     %0, #0\n\t"
+        "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0 */
+        "mcr     p15, 0, %1, c2, c0, 0\n\t"   /* TTBR0 */
+        "mcr     p15, 0, %2, c3, c0, 0\n\t"   /* DACR = all client */
+        "dsb\n\t"
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"
+        "orr     %0, %0, #0x1\n\t"             /* MMU enable */
+        "orr     %0, %0, #0x4\n\t"             /* D-cache */
+        "orr     %0, %0, #0x1000\n\t"          /* I-cache */
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "isb\n"
+        : "=&r"(r)
+        : "r"(ttbr), "r"(dacr)
+        : "memory"
+    );
+}
+
+
 ///////////////////////////////////////////// SDRAM TEST ////////////////////////////////
 #define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
 #define SDRAM_TEST_WORDS 64
@@ -177,6 +207,7 @@ void main(void)
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
     NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
+    mmu_init();
     GENERAL_FLAG = 0xBB01;
 
     heap_init();

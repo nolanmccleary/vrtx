@@ -9,7 +9,9 @@ MEMORY {
     OCRAM (rwx) : ORIGIN = 0xFFFF0000, LENGTH = 64K
 }
 
-_stack_size = 0x2000;   /* 8KB for each stack */
+_stack_size     = 0x2000;   /* 8KB for FIQ/IRQ/SVC/SYS */
+_abt_stack_size = 0x200;    /* 512 bytes — handler only needs a few words */
+_und_stack_size = 0x200;
 _bank_size = 0x80; /*128 tasks */
 
 _heap_offset = 0x200000; /* 1MB offset */
@@ -67,12 +69,12 @@ SECTIONS {
         _bss_end = .;
     } > OCRAM
 
-    /* OCRAM stacks */
-    . = ORIGIN(OCRAM) + LENGTH(OCRAM) - (_stack_size * 4);
-
-    _sys_stack_top = . + (_stack_size * 1);
-    _svc_stack_top = . + (_stack_size * 2);
-    _irq_stack_top = . + (_stack_size * 3);
-    _fiq_stack_top = . + (_stack_size * 4);
+    /* OCRAM stacks — top-down: UND, ABT, FIQ, IRQ, SVC, SYS */
+    _und_stack_top = ORIGIN(OCRAM) + LENGTH(OCRAM) - 4;
+    _abt_stack_top = _und_stack_top - _und_stack_size;
+    _fiq_stack_top = _abt_stack_top - _abt_stack_size;
+    _irq_stack_top = _fiq_stack_top - _stack_size;
+    _svc_stack_top = _irq_stack_top - _stack_size;
+    _sys_stack_top = _svc_stack_top - _stack_size;
 
 }

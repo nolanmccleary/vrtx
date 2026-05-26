@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import subprocess, socket, time, re
+import subprocess, socket, time, re, os
 
 OPENOCD_CFG = "openocd/de1soc.cfg"
 
@@ -15,6 +15,16 @@ THREAD_COUNT_3    = 0xFFFF002C
 VECTOR_FLAG       = 0xFFFF0000
 ALLOC_CHECK       = 0xFFFF0008
 SDRAM_TEST_RESULT = 0xFFFF000C
+
+ELF = os.path.abspath('build/qlonq.elf')
+
+entry_hex = subprocess.check_output(
+    ['arm-none-eabi-nm', ELF]
+).decode()
+entry_hex = re.search(r'([0-9a-f]+) . _reset', entry_hex).group(1)
+
+subprocess.run(['pkill', '-9', 'openocd'], stderr=subprocess.DEVNULL)
+time.sleep(0.5)
 
 proc = subprocess.Popen(
     ['openocd', '-f', OPENOCD_CFG, '-c', 'init'],
@@ -41,6 +51,14 @@ def reg(name):
     resp = ocd(f'reg {name}')
     m = re.search(name + r' \(/32\):\s*(0x[0-9a-f]+)', resp)
     return int(m.group(1), 16) if m else None
+
+
+ocd('sleep 1000')
+ocd('halt')
+ocd(f'load_image {ELF}')
+ocd(f'reg pc 0x{entry_hex}')
+ocd('resume')
+time.sleep(2)
 
 
 # --- loop 1: TICK_MIRROR must increment ---

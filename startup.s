@@ -43,78 +43,77 @@ _reset_handler:
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
 
-    ldr r0, =_fiq_stack_top
+    ldr r0, =_und_stack_top
 
     @; SET STACK POINTERS FOR EACH MODE
+
+    msr CPSR_c, #(MODE_UND | I_BIT | F_BIT)
+    mov sp, r0
+    ldr r1, =_und_stack_size
+    sub r0, r0, r1
+
+    msr CPSR_c, #(MODE_ABT | I_BIT | F_BIT)
+    mov sp, r0
+    ldr r1, =_abt_stack_size
+    sub r0, r0, r1
 
     msr CPSR_c, #(MODE_FIQ | I_BIT | F_BIT)
     mov sp, r0
     ldr r1, =_stack_size
-    sub r0, r0, r1 
+    sub r0, r0, r1
 
     msr CPSR_c, #(MODE_IRQ | I_BIT | F_BIT)
     mov sp, r0
     ldr r1, =_stack_size
-    sub r0, r0, r1 
+    sub r0, r0, r1
 
     msr CPSR_c, #(MODE_SVC | I_BIT | F_BIT)
     mov sp, r0
     ldr r1, =_stack_size
-    sub r0, r0, r1 
+    sub r0, r0, r1
 
     msr CPSR_c, #(MODE_SYS | I_BIT | F_BIT)
     mov sp, r0
-    ldr r1, =_stack_size
-    sub r0, r0, r1 
 
     @; RUNTIME IS NOMINALLY IN SYSTEM MODE
 
-    @; Disabling MMU and caches explicitly here, note that A9 should do this automatically upon true reset however we may wish to vector to reset handler upon some other condition in the future
+    @; Disabling MMU and caches explicitly; A9 does this on true reset but we may
+    @; vector here from other conditions in the future.
+    mrc p15, 0, r1, c1, c0, 0
 
-    @; SELECTION HIERARCHY: opcode1->CRn->CRm->opcode2
-    @; opcode1: domain select e.g. sys, addr, virt
-    @; CRn: bank select e.g. control, fault status
-    @; CRm bank: file select e.g. prim control, lockdown
-    @; opcode2: reg select e.g. SCTLR, ACTLR, CPACR
-    mrc p15, 0, r1, c1, c0, 0 @; decoded: cp15 to r1, domain=sys, crn=control, crm=primctl, regsel=SCTLR (sys ctl)
+    @; DISABLE MMU + L1
+    bic r1, r1, #0x1           @ MMU disable
+    bic r1, r1, #(0x1 << 12)  @ I-cache disable
+    bic r1, r1, #(0x1 << 2)   @ D-cache disable
 
-    @; DISABLE MMU
-    bic r1, r1, #0x1 @ clear MMU enable 
-
-    @; DISABLE L1
-    bic r1, r1, #(0x1 << 12) @ I-cache disable
-    bic r1, r1, #(0x1 << 2)  @ D-cache disable
-
-    DSB @; finish prior activity
-    mcr p15, 0, r1, c1, c0, 0 @; decoded: r1 to cp15, domain=sys, crn=control, crm=primctl, regsel=SCTLR (sys ctl)
-    ISB @; pipeline flush
+    DSB
+    mcr p15, 0, r1, c1, c0, 0
+    ISB
 
     @; INVALIDATE L1 I-CACHE
     mov r1, #0
-    
     DSB
     mcr p15, 0, r1, c7, c5, 0
     ISB
 
-    @; WALK D-CACHE (NO INVALIDATE OPERATION LIKE I-CACHE CTLR POSESSES)
-    mrc p15, 1, r0, c0, c0, 0 @; 1: cache/TLB maintenance domain, c0: ID bank -> read cache size id
+    @; WALK D-CACHE (no bulk invalidate — must do set/way)
+    mrc p15, 1, r0, c0, c0, 0
     mov r3, #0x1FF
-    and r0, r3, r0, lsr #13 @; r0 = numsets - 1; r0 = (r0 >> 13) & 0x1FF
+    and r0, r3, r0, lsr #13    @ r0 = numsets - 1
     mov r1, #0
 
-@; ASSUMES WE ARE USING 4-WAY SET-ASSOCIATIVE CACHE; for way in ways { for set in sets }; may need to adjust mask above depending on how many sets present
 way_loop:
     mov r3, #0
 set_loop:
     mov r2, r1, lsl #30
-    orr r2, r2, r3, lsl #5 
-    mcr p15, 0, r2, c7, c6, 2 
-    add r3, r3, #1 
+    orr r2, r2, r3, lsl #5
+    mcr p15, 0, r2, c7, c6, 2
+    add r3, r3, #1
     cmp r0, r3
     BGT set_loop
 
     add r1, r1, #1
-    cmp r1, #4 
+    cmp r1, #4
     BNE way_loop
 
     @; INVALIDATE TLB
@@ -125,6 +124,15 @@ set_loop:
     mrc p15, 0, r1, c1, c0, 0
     orr r1, r1, #(0x1<<11)
     mcr p15, 0, r1, c1, c0, 0
+
+    @; ENABLE D-SIDE PREFETCH
+    MRC p15, 0, r1, c1, c0, 1
+    ORR r1, r1, #(0x1 <<2)
+    MCR p15, 0, r1, c1, c0, 1
+    DSB
+    ISB
+
+    @; MMU + cache init deferred to mmu_init() in main(), after SDRAM PHY is up.
 
     msr CPSR_c, #(MODE_SYS)    @; no I_BIT, no F_BIT = both enabled
 
