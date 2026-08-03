@@ -40,7 +40,7 @@ void heap_deinit(void)
 }
 
 
-void* kMalloc(uint32_t size)
+void* kMalloc(size_t size)
 {
     if(!heap_initialized) heap_init();
 

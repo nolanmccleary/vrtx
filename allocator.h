@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 extern char _heap_start;
 extern char _heap_end;
@@ -16,7 +17,7 @@ extern char _heap_end;
 #define HEAP_SIZE  (HEAP_END - HEAP_START)
 
 void heap_init(void);
-void* kMalloc(uint32_t size);
+void* kMalloc(size_t size);
 void kFree(void* target);
 
 #endif

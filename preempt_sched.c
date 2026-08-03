@@ -3,7 +3,50 @@
 #include "preempt_sched.h" 
 #include "allocator.h"
 #include "flags.h"
+#include "min_heap.h"
 
+
+
+
+
+
+
+static inline void start_thread(thread_t* thread)
+{
+    uint32_t* sp = (uint32_t*)thread->sp;
+
+    //Return From Exception Full Descending (RFEFD) frame (bottom) as well as all the popping stuff etc
+    *(--sp) = MODE_SYS;                    // spsr_irq
+    *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
+
+    // r0-r3, r12
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // r3
+    *(--sp) = 0; // r2
+    *(--sp) = 0; // r1
+    *(--sp) = (uint32_t)&thread->thread_status; // r0
+
+    uint32_t adjustment = ((uint32_t)sp) & 4;
+    sp = (uint32_t*)((uint32_t)sp - adjustment);
+
+    *(--sp) = 0; // lr_sys
+    *(--sp) = adjustment; // alignment
+
+    thread->sp = (char*)sp;
+    thread->thread_status = RUNNING;
+
+    num_running++;
+    FLAG_WRITE(NUM_RUNNING, num_running);
+}
+
+
+
+
+
+
+
+
+#ifdef LINEAR_SCHED //Keeping this so we can profile later
 
 #define MAX_THREADS 64
 
@@ -145,36 +188,6 @@ void clean_pool(void)
 
 
 
-static inline void start_thread(thread_t* thread)
-{
-    uint32_t* sp = (uint32_t*)thread->sp;
-
-    // RFEFD frame (bottom)
-    *(--sp) = MODE_SYS;                    // spsr_irq
-    *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
-
-    // r0-r3, r12
-    *(--sp) = 0; // r12
-    *(--sp) = 0; // r3
-    *(--sp) = 0; // r2
-    *(--sp) = 0; // r1
-    *(--sp) = (uint32_t)&thread->thread_status; // r0
-
-    uint32_t adjustment = ((uint32_t)sp) & 4;
-    sp = (uint32_t*)((uint32_t)sp - adjustment);
-
-    *(--sp) = 0; // lr_sys
-    *(--sp) = adjustment; // alignment
-
-    thread->sp = (char*)sp;
-    thread->thread_status = RUNNING;
-
-    num_running++;
-    FLAG_WRITE(NUM_RUNNING, num_running);
-}
-
-
-
 inline void next_thread(void)
 {
     if (num_threads > 0)
@@ -194,7 +207,7 @@ inline void next_thread(void)
             __asm__ __volatile__ (
                 "cps #0x1F\n"
                 "mov %0, sp\n"
-                "cps #0x13\n"
+       "cps #0x13\n"
                 : "=r"(curr_thread->sp)
             );
         }
@@ -277,7 +290,123 @@ inline void next_thread(void)
 }
 
 
+#else //Default to minheap-based scheduler
 
+
+
+
+#include "deque.h"
+
+
+
+
+static bool sched_init = false;
+static bool on_main = true;
+
+
+static heap_t gHighHeap1
+static heap_t gHighHeap2
+static heap_t gMedHeap1
+static heap_t gMedHeap2
+static heap_t gLowHeap1
+static heap_t gLowHeap2
+
+
+static heap_t* currHigh;
+static heap_t* currMed;
+static heap_t* currLow;
+
+
+
+static thread_t main_thread;
+static char* main_sp;
+
+
+
+
+void psched_init()
+{
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    on_main = true;
+    sched_init = true;
+
+    __asm__ __volatile__("dmb sy" ::: "memory");
+    __asm__ __volatile__("cpsie i" ::: "memory");
+}
+
+
+void psched_deinit()
+{
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    sched_init = false;
+
+    __asm__ __volatile__("dmb sy" ::: "memory");
+    __asm__ __volatile__("cpsie i" ::: "memory");
+}
+
+
+
+inline void next_thread()
+{
+    if (sched_init)
+    {
+        if (on_main) //last executing thread was main
+        {
+            
+        }
+
+        else //if last thread on the heap execute main next and swap heap ptr otherwise pop and execute
+        {
+
+        }
+    }
+
+    else if (!on_main) //something not on main shut down sched, return gracefully (yes I know this is janky)
+    {
+
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#endif
 
 
 

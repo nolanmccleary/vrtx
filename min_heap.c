@@ -8,7 +8,6 @@ heap_t gHeap1;
 heap_t gHeap2;
 
 
-int curr_index = 0;
 
 
 
@@ -125,15 +124,16 @@ heap_op_e remove_node(heap_t* heap)
 
 
 //can debate this later
-heap_node_t pop_heap(heap_t* heap)
+heap_op_e pop_heap(heap_node_t* dest, heap_t* heap)
 {
     if (heap->curr_index > 0)
     {
         heap_node_t node = heap->heap[0];
         remove_node(heap);
-        return node;
+        *dest = node;
+        return OP_OK;
     }
 
-    else return NULL;
+    else return OP_FAILED;
 }
 

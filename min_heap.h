@@ -2,6 +2,7 @@
 #define __MIN_HEAP_H_
 
 
+#include "preempt_sched.h"
 
 
 #define MAX_NODES 100
@@ -15,16 +16,10 @@ typedef enum
 
 
 
-
-
-
 typedef struct 
 {
     int order;
-
-    char* payload;
-    size_t payload_size;
-    
+    thread_t* thread;
 }   heap_node_t;
 
 

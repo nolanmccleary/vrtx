@@ -181,23 +181,23 @@ _data_handler:
 @;1) lr_irq stores last SYS PC 
 @;2) after going back to sys mode, lr_sys stores last sys LR
 _irq_handler:
-    sub lr, lr, #4 @; get lr_irq
-    srsfd sp!, #0x1f @; save lr_irq and spsr_irq onto sysmode stack; decrement sysmode sp after
+    sub lr, lr, #4 @; get lr_irq i.e. get the last pre-interrupt PC value
+    srsfd sp!, #0x1f @; Store Return State Full Descending --- push lr_irq (cached pc) and spsr_irq (cached spsr) onto sysmode stack (specified by 0x1f), sp autodecs
     
-    cps #0x1f @; switch to system mode
-    cpsid i @; no nested interrupts for now
+    cps #0x1f @; Change Processor State --- switch to system mode
+    cpsid i @; Change Processor State Interrupt Disable --- no nested interrupts for now
 
-    push {r0-r3, r12} @; store AAPCS regset
+    push {r0-r3, r12} @; store AAPCS regset --- push onto sysmode stack
 
     and r1, sp, #4 @; 8-byte align sp
     sub sp, sp, r1 
-    push {r1, lr} @; store adjustment and lr_sys
+    push {r1, lr} @; push adjustment and lr_sys onto sysmode stack
 
     
-    cps #0x13 @; switch to service mode
+    cps #0x13 @; switch to service mode to prevent clobbering of lr_irq or current sysmode stacks
 
-    BL _identify_and_clear_source
-    BL c_irq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
+    BL _identify_and_clear_source @; get irq switch vector and ack interrupt (accepted + finished reading switch vector)
+    BL c_irq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source --- nominal routine switches sysmode sp from scheduler-managed pointer bank
 
     cps #0x1f @; switch back to system mode
 
@@ -208,7 +208,7 @@ _irq_handler:
 
     cpsie i @; re-enable interrupts
 
-    RFEFD sp! @; restore lr_irq and spsr_irq from sysmode stack, inc sp, branch to lr_irq and restore cpsr from spsr_irq
+    RFEFD sp! @; Set PC and CPSR
 
 
 
@@ -237,8 +237,7 @@ _fiq_handler:
 
     cpsie if @; re-enable interrupts
 
-    RFEFD sp! @; restore lr_irq and spsr_irq from sysmode stack, inc sp, branch to lr_irq and restore cpsr from spsr_irq
-
+    RFEFD sp! @; Set PC and CPSR
 
 
 @; _context_switch:
