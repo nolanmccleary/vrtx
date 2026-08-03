@@ -16,7 +16,7 @@ typedef struct
     struct deque_node* next;
     struct deque_node_t* prev;
     char* payload;
-    size_t capacity
+    size_t capacity;
 }   deque_node_t;
 
 

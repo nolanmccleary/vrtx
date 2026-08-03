@@ -4,13 +4,6 @@
 
 
 
-heap_t gHeap1;
-heap_t gHeap2;
-
-
-
-
-
 static inline int find_parent_index(int pos)
 {
     if (pos == 0) return 0;
@@ -109,6 +102,27 @@ heap_op_e insert_node(heap_t* heap, heap_node_t* new)
 
 
 
+
+heap_op_e smart_insert(heap_t* heap, thread_t* thread)
+{
+    
+    if (heap->curr_index < MAX_NODES)
+    {
+        heap_node_t node;
+        node.thread = thread;
+        node.order = heap->curr_index;
+
+        heap->heap[heap->curr_index] = node;
+        percolate_up(heap, heap->curr_index++);
+        return OP_OK;
+    }
+
+    else return OP_FAILED;
+}
+
+
+
+
 heap_op_e remove_node(heap_t* heap)
 {
     if (heap->curr_index > 0)
@@ -134,6 +148,10 @@ heap_op_e pop_heap(heap_node_t* dest, heap_t* heap)
         return OP_OK;
     }
 
-    else return OP_FAILED;
+    else
+    {
+        *dest = NULL;
+        return OP_FAILED;
+    }
 }
 

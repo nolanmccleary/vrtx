@@ -3,12 +3,28 @@
 #include "preempt_sched.h" 
 #include "allocator.h"
 #include "flags.h"
-#include "min_heap.h"
 
 
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+#ifdef LINEAR_SCHED //Keeping this so we can profile later
+
+#define MAX_THREADS 64
+
+static int num_running = 0;
 
 
 static inline void start_thread(thread_t* thread)
@@ -38,19 +54,6 @@ static inline void start_thread(thread_t* thread)
     num_running++;
     FLAG_WRITE(NUM_RUNNING, num_running);
 }
-
-
-
-
-
-
-
-
-#ifdef LINEAR_SCHED //Keeping this so we can profile later
-
-#define MAX_THREADS 64
-
-
 
 typedef struct
 {
@@ -294,33 +297,76 @@ inline void next_thread(void)
 
 
 
-
+#include "min_heap.h"
 #include "deque.h"
 
 
 
 
 static bool sched_init = false;
-static bool on_main = true;
 
 
-static heap_t gHighHeap1
-static heap_t gHighHeap2
-static heap_t gMedHeap1
-static heap_t gMedHeap2
-static heap_t gLowHeap1
-static heap_t gLowHeap2
+static heap_t highHeap1;
+static heap_t highHeap2;
+static heap_t medHeap1;
+static heap_t medHeap2;
+static heap_t lowHeap1;
+static heap_t lowHeap2;
 
 
 static heap_t* currHigh;
 static heap_t* currMed;
 static heap_t* currLow;
+static heap_t* nextHigh;
+static heap_t* nextMed;
+static heap_t* nextLow;
+
+
+static thread_t* curr_thread;
+static thread_t* main_thread;
+
+
+static deque_t* highQueue;
+static deque_t* medQueue;
+static deque_t* lowQueue;
 
 
 
-static thread_t main_thread;
-static char* main_sp;
 
+static inline void start_thread(thread_t* thread)
+{
+    uint32_t* sp = (uint32_t*)thread->sp;
+
+    //Return From Exception Full Descending (RFEFD) frame (bottom) as well as all the popping stuff etc
+    *(--sp) = MODE_SYS;                    // spsr_irq
+    *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
+
+    // r0-r3, r12
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // r3
+    *(--sp) = 0; // r2
+    *(--sp) = 0; // r1
+    *(--sp) = (uint32_t)&thread->thread_status; // r0
+
+    uint32_t adjustment = ((uint32_t)sp) & 4;
+    sp = (uint32_t*)((uint32_t)sp - adjustment);
+
+    *(--sp) = 0; // lr_sys
+    *(--sp) = adjustment; // alignment
+
+    thread->sp = (char*)sp;
+    thread->thread_status = RUNNING;
+}
+
+
+
+
+static inline void swap_ptrs(void** p1, void** p2)
+{
+    void* tmp = *p1;
+    *p1 = *p2;
+    *p2 = tmp;
+}
 
 
 
@@ -328,7 +374,23 @@ void psched_init()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    on_main = true;
+    highQueue = initialize_deque();
+    medQueue = initialize_deque();
+    lowQueue = initialize_deque();
+
+
+    currHigh = &highHeap1;
+    currMed = &medHeap1;
+    currLow = &lowHeap1;
+    nextHigh = &highHeap2;
+    nextMed = &medHeap2;
+    nextLow = &lowHeap2;
+
+    main_thread = (thread_t*)kMalloc(sizeof(thread_t));
+    main_thread->thread_status = RUNNING;
+
+    curr_thread = main_thread;
+
     sched_init = true;
 
     __asm__ __volatile__("dmb sy" ::: "memory");
@@ -340,6 +402,13 @@ void psched_deinit()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
+    destroy_deque(highQueue);
+    destroy_deque(medQueue);
+    destroy_deque(lowQueue);
+
+    kFree(curr_thread);     //Free memory occupied by thread objects
+    kFree(main_thread);
+
     sched_init = false;
 
     __asm__ __volatile__("dmb sy" ::: "memory");
@@ -350,22 +419,132 @@ void psched_deinit()
 
 inline void next_thread()
 {
+
     if (sched_init)
     {
-        if (on_main) //last executing thread was main
+
+        __asm__ __volatile__ (
+            "cps #0x1F\n"
+            "mov %0, sp\n"
+            "cps #0x13\n"
+            : "=r"(curr_thread->sp)
+        );
+
+ 
+
+        while(highQueue->size > 0)
         {
-            
+            thread_t targ;
+            pop_front(highQueue, (char*)(&targ), sizeof(thread_t));
+            smart_insert(currHigh, &targ);
         }
 
-        else //if last thread on the heap execute main next and swap heap ptr otherwise pop and execute
+        while(medQueue->size > 0)
         {
+            thread_t targ;
+            pop_front(medQueue, (char*)(&targ), sizeof(thread_t));
+            smart_insert(currMed, &targ);
+        }
+
+        while(lowQueue->size > 0)
+        {
+            thread_t targ;
+            pop_front(lowQueue, (char*)(&targ), sizeof(thread_t));
+            smart_insert(currLow, &targ);
+        }
+
+
+        bool priority_set = false;
+
+
+        while(currHigh->curr_index > 0)
+        {
+            heap_node_t next_high;
+            pop_heap(&next_high, currHigh);
+
+            if(next_high.thread->thread_status == PENDING || next_high.thread->thread_status == RUNNING)
+            {
+                curr_thread = next_high.thread;
+                smart_insert(nextHigh, next_high.thread);
+
+                priority_set = true;
+                break;
+            }
+
+            else kFree(next_high.thread); //Thread has finished executing, we can deallocate
+        }
+
+        
+        while(!priority_set && currMed->curr_index > 0 && nextHigh->curr_index == 0)
+        {
+            heap_node_t next_med;
+            pop_heap(&next_med, currMed);
+
+            if(next_med.thread->thread_status == PENDING || next_med.thread->thread_status == RUNNING)
+            {
+                curr_thread = next_med.thread;
+                smart_insert(nextMed, next_med.thread);
+
+                priority_set = true;
+                break;
+            }
+
+            else kFree(next_med.thread);
+        }
+
+
+        while(!priority_set && currLow->curr_index > 0 && nextHigh->curr_index == 0 && nextMed->curr_index == 0)
+        {
+            heap_node_t next_low;
+            pop_heap(&next_low, currLow);
+
+            if(next_low.thread->thread_status == PENDING || next_low.thread->thread_status == RUNNING)
+            {
+                curr_thread = next_low.thread;
+                smart_insert(nextLow, next_low.thread);
+
+                priority_set = true;
+                break;
+            }
+
+            else kFree(next_low.thread);
+        }
+
+
+        if (!priority_set) //Either no valid tasks set or we ran the last one last cycle
+        {
+            curr_thread = main_thread;
+        }
+
+
+        if(currHigh->curr_index == 0 && nextHigh->curr_index > 0)
+            swap_ptrs((void**)(&currHigh), (void**)(&nextHigh));
+        if(currMed->curr_index == 0 && nextMed->curr_index > 0)
+            swap_ptrs((void**)(&currMed), (void**)(&nextMed));
+        if(currLow->curr_index == 0 && nextLow->curr_index > 0)
+            swap_ptrs((void**)(&currLow), (void**)(&nextLow));
+
+
+        switch (curr_thread->thread_status)
+        {
+                case PENDING:
+                    start_thread(curr_thread);
+                    /* fall through */
+
+                case RUNNING:
+                    __asm__ __volatile__ ( 
+                        "cps #0x1F\n"
+                        "mov sp, %0\n"
+                        "cps #0x13\n"
+                        :
+                        : "r"(curr_thread->sp)
+                    );
+                    break;
+
+                default:
+                    break;
 
         }
-    }
-
-    else if (!on_main) //something not on main shut down sched, return gracefully (yes I know this is janky)
-    {
-
     }
 }
 
