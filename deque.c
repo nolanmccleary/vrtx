@@ -42,9 +42,7 @@ deque_op_e destroy_deque(deque_t* root)
 deque_op_e push_front(deque_t* root, char* payload, size_t payload_size)
 {
     deque_node_t* new_node = (deque_node_t*)kMalloc(sizeof(deque_node_t));
-    char* new_payload = (char*)kMalloc(payload_size * sizeof(char));
-    new_node->payload = new_payload;
-    memcpy(new_payload, payload, payload_size);
+    new_node->payload = payload;
     new_node->capacity = payload_size;
 
     if(root->size == 0)
@@ -73,9 +71,7 @@ deque_op_e push_front(deque_t* root, char* payload, size_t payload_size)
 deque_op_e push_back(deque_t* root, char* payload, size_t payload_size)
 {
     deque_node_t* new_node = (deque_node_t*)kMalloc(sizeof(deque_node_t));
-    char* new_payload = (char*)kMalloc(payload_size * sizeof(char));
-    new_node->payload = new_payload;
-    memcpy(new_payload, payload, payload_size);
+    new_node->payload = payload;
     new_node->capacity = payload_size;
 
     if(root->size == 0)
@@ -101,12 +97,12 @@ deque_op_e push_back(deque_t* root, char* payload, size_t payload_size)
 
 
 
-deque_op_e pop_front(deque_t* root, char* dest, size_t capacity)
+deque_op_e pop_front(deque_t* root, char** dest, size_t* capacity)
 {
     if ((root->size < 1) || (capacity < root->head->capacity)) return -1; 
 
-    int retcap = root->head->capacity;
-    memcpy(dest, root->head->payload, retcap);
+    *capacity = root->head->capacity;
+    *dest = root->head->payload;
     
     deque_node_t* tmp = root->head;
     root->head = root->head->prev;
@@ -114,22 +110,21 @@ deque_op_e pop_front(deque_t* root, char* dest, size_t capacity)
     if (root->head == NULL) root->tail = NULL;
     else root->head->next = NULL;
 
-    kFree(tmp->payload)
     kFree(tmp);
 
     root->size--;
 
-    return retcap;
+    return DEQUE_OP_OK;
 }
 
 
 
-deque_op_e pop_back(deque_t* root, char* dest, size_t capacity)
+deque_op_e pop_back(deque_t* root, char** dest, size_t* capacity)
 {
     if ((root->size < 1) || (capacity < root->tail->capacity)) return -1; 
 
-    int retcap = root->tail->capacity;
-    memcpy(dest, root->tail->payload, retcap);
+    *capacity = root->tail->capacity;
+    *dest = root->tail->payload;
     
     deque_node_t* tmp = root->tail;
     root->tail = root->tail->next;
@@ -137,36 +132,35 @@ deque_op_e pop_back(deque_t* root, char* dest, size_t capacity)
     if (root->tail == NULL) root->head = NULL;
     else root->tail->prev = NULL;
 
-    kFree(tmp->payload)
     kFree(tmp);
 
     root->size--;
 
-    return retcap;
+    return DEQUE_OP_OK;
 }
 
 
 
-deque_op_e peek_front(deque_t* root, char* dest, size_t capacity)
+deque_op_e peek_front(deque_t* root, char** dest, size_t* capacity)
 {
     if ((root->size < 1) || (capacity < root->head->capacity)) return -1; 
 
-    int retcap = root->head->capacity;
-    memcpy(dest, root->head->payload, retcap);
+    *capacity = root->head->capacity;
+    *dest = root->head->payload;
 
-    return retcap;
+    return DEQUE_OP_OK;
 }
 
 
 
-deque_op_e peek_back(deque_t* root, char* dest, size_t capacity)
+deque_op_e peek_back(deque_t* root, char** dest, size_t* capacity)
 {
     if ((root->size < 1) || (capacity < root->tail->capacity)) return -1; 
 
-    int retcap = root->tail->capacity;
-    memcpy(dest, root->tail->payload, retcap);
+    *capacity = root->tail->capacity;
+    *dest = root->tail->payload;
 
-    return retcap;
+    return DEQUE_OP_OK;
 }
 
 

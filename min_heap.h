@@ -2,6 +2,8 @@
 #define __MIN_HEAP_H_
 
 
+#include <stddef.h>
+#include <stdint.h>
 #include "thread.h"
 
 
@@ -27,17 +29,15 @@ typedef struct
 typedef struct
 {
     heap_node_t heap [MAX_NODES];
-    int curr_index;
+    size_t curr_index;
 }   heap_t;
 
 
 
 
 
-heap_op_e insert_node(heap_t* heap, heap_node_t* new);
-heap_op_e smart_insert(heap_t* heap, thread_t* thread);
-heap_op_e remove_node(heap_t* heap);
-heap_op_e pop_heap(heap_node_t* dest, heap_t* heap);
+heap_op_e insert_node(heap_t* heap, thread_t* thread, uint32_t order);
+heap_op_e pop_heap(heap_t* heap, thread_t** thread);
 
 
 

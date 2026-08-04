@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include "min_heap.h"
+#include "thread.h"
 
 
 
@@ -86,31 +87,14 @@ static inline void percolate_down(heap_t* heap, int index)
 }
 
 
-
-
-heap_op_e insert_node(heap_t* heap, heap_node_t* new)
-{
-    if (heap->curr_index < MAX_NODES)
-    {
-        heap->heap[heap->curr_index] = *new;
-        percolate_up(heap, heap->curr_index++);
-        return OP_OK;
-    } 
-
-    else return OP_FAILED;
-}
-
-
-
-
-heap_op_e smart_insert(heap_t* heap, thread_t* thread)
+heap_op_e insert_node(heap_t* heap, thread_t* thread, uint32_t order)
 {
     
     if (heap->curr_index < MAX_NODES)
     {
         heap_node_t node;
         node.thread = thread;
-        node.order = heap->curr_index;
+        node.order = order;
 
         heap->heap[heap->curr_index] = node;
         percolate_up(heap, heap->curr_index++);
@@ -121,9 +105,7 @@ heap_op_e smart_insert(heap_t* heap, thread_t* thread)
 }
 
 
-
-
-heap_op_e remove_node(heap_t* heap)
+static heap_op_e remove_node(heap_t* heap)
 {
     if (heap->curr_index > 0)
     {
@@ -136,21 +118,20 @@ heap_op_e remove_node(heap_t* heap)
 }
 
 
-
-//can debate this later
-heap_op_e pop_heap(heap_node_t* dest, heap_t* heap)
+heap_op_e pop_heap(heap_t* heap, thread_t** thread)
 {
     if (heap->curr_index > 0)
     {
         heap_node_t node = heap->heap[0];
-        remove_node(heap);
-        *dest = node;
+        if(remove_node(heap) == OP_FAILED) return OP_FAILED;
+
+        *thread = node.thread;
         return OP_OK;
     }
 
     else
     {
-        *dest = NULL;
+        thread = NULL;
         return OP_FAILED;
     }
 }

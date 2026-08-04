@@ -5,6 +5,7 @@
 #include "flags.h"
 #include "preempt_sched.h"
 #include "boot/sequencer.h"
+#include "thread.h"
 
 #if ENABLE_DCACHE && !ENABLE_MMU
 #error ENABLE_DCACHE requires ENABLE_MMU
@@ -237,9 +238,9 @@ void c_startup(void)
 
 void main(void)
 {
-    add_thread(pthread1, HIGH, 1);
-    add_thread(pthread2, HIGH, 2);
-    add_thread(pthread3, HIGH, 3);
+    add_thread(pthread1, 67, PERIODIC);
+    add_thread(pthread2, 67, PERIODIC);
+    add_thread(pthread3, 69, APERIODIC);
 
     sdram_test();
 
@@ -256,7 +257,6 @@ void main(void)
 
     while (1)
     {
-        clean_pool();
         FLAG_WRITE(ALLOC_CHECK, *test3);
         FLAG_WRITE(GENERAL_FLAG, 0x69);
     }

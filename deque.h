@@ -1,6 +1,7 @@
 #ifndef __DEQUE_H__
 #define __DEQUE_H__
 
+#include "stddef.h"
 
 
 
@@ -35,11 +36,11 @@ deque_op_e      destroy_deque(deque_t* root);
 deque_op_e      push_front(deque_t* root, char* payload, size_t payload_size);
 deque_op_e      push_back(deque_t* root, char* payload, size_t payload_size);
 
-int             pop_front(deque_t* root, char* dest, size_t capacity);
-int             pop_back(deque_t* root, char* dest, size_t capacity);
+int             pop_front(deque_t* root, char** dest, size_t* capacity);
+int             pop_back(deque_t* root, char** dest, size_t* capacity);
 
-int             peek_front(deque_t* root, char* dest, size_t capacity);
-int             peek_back(deque_t* root, char* dest, size_t capacity);
+int             peek_front(deque_t* root, char** dest, size_t* capacity);
+int             peek_back(deque_t* root, char** dest, size_t* capacity);
 
 
 size_t          deque_size(deque_t* root);

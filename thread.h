@@ -14,28 +14,28 @@ typedef enum
 }   thread_status_e;
 
 
-typedef enum
-{
-    LOW,
-    MEDIUM,
-    HIGH,
-}   thread_crit_e;
 
 typedef enum
 {
-    AVAILABLE,
-    UNAVAILABLE,
-    FLAGGED,
-}   thread_availability_e;
+    PERIODIC,
+    APERIODIC,
+}   thread_periodicity_e;
+
+
 
 
 typedef struct
 {
+    thread_periodicity_e periodicity;
+    uint32_t period;
+
+    uint32_t release_time;
+    uint32_t deadline;
+    thread_status_e thread_status;
+
     char stack[THREAD_STACK_SIZE];
     char* sp;
-    thread_status_e thread_status;
     sys_exit_e (*func)(thread_status_e* status);
-    thread_crit_e crit;
 }   thread_t;
 
 

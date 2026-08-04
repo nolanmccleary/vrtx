@@ -3,14 +3,8 @@
 #include "preempt_sched.h" 
 #include "allocator.h"
 #include "flags.h"
-
-
-
-
-
-
-
-
+#include "system.h"
+#include "thread.h"
 
 
 
@@ -54,6 +48,15 @@ static inline void start_thread(thread_t* thread)
     num_running++;
     FLAG_WRITE(NUM_RUNNING, num_running);
 }
+
+
+typedef enum
+{
+    AVAILABLE,
+    UNAVAILABLE,
+    FLAGGED,
+}   thread_availability_e;
+
 
 typedef struct
 {
@@ -143,50 +146,6 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), thread_crit_e
     FLAG_WRITE(NUM_THREADS, num_threads);
 
     return SYS_ERROR;
-}
-
-
-
-sys_exit_e free_thread(uint32_t id)
-{
-    for(size_t i = 0; i < MAX_THREADS; i++)
-    {
-        thread_wrapper_t* thread = &thread_pool[i];
-        if(thread->available == UNAVAILABLE && thread->id == id)
-        {
-            kFree(thread->thread);
-            thread->thread = NULL;
-            thread->available = AVAILABLE;
-            num_threads--;
-            return SYS_OK;
-        }
-    }
-
-    FLAG_WRITE(NUM_THREADS, num_threads);
-
-    return SYS_ERROR;
-}
-
-
-
-void clean_pool(void)
-{
-    for(size_t i = 0; i < MAX_THREADS; i++)
-    {
-        thread_wrapper_t* thread = &thread_pool[i];
-        if(thread->available == UNAVAILABLE && thread->thread->thread_status == FINISHED)
-        {
-            thread_t* to_free = thread->thread;
-            thread->available = AVAILABLE;
-            thread->thread = NULL;
-            num_threads--;
-            num_running--;
-            kFree(to_free);
-        }
-    }
-
-    FLAG_WRITE(NUM_THREADS, num_threads);
-    FLAG_WRITE(NUM_RUNNING, num_running);
 }
 
 
@@ -293,7 +252,14 @@ inline void next_thread(void)
 }
 
 
-#else //Default to minheap-based scheduler
+#else //Default to EDF scheduler
+
+
+
+
+
+
+
 
 
 
@@ -306,29 +272,17 @@ inline void next_thread(void)
 static bool sched_init = false;
 
 
-static heap_t highHeap1;
-static heap_t highHeap2;
-static heap_t medHeap1;
-static heap_t medHeap2;
-static heap_t lowHeap1;
-static heap_t lowHeap2;
+static heap_t heap1;
+static heap_t heap2;
 
-
-static heap_t* currHigh;
-static heap_t* currMed;
-static heap_t* currLow;
-static heap_t* nextHigh;
-static heap_t* nextMed;
-static heap_t* nextLow;
-
+static heap_t* deadHeap;
+static heap_t* relHeap;
 
 static thread_t* curr_thread;
 static thread_t* main_thread;
 
 
-static deque_t* highQueue;
-static deque_t* medQueue;
-static deque_t* lowQueue;
+static deque_t* incomingThreads;
 
 
 
@@ -361,12 +315,21 @@ static inline void start_thread(thread_t* thread)
 
 
 
-static inline void swap_ptrs(void** p1, void** p2)
+uint32_t gTicks;
+uint32_t gMissedDeadlines;
+
+static inline bool passed_deadline(uint32_t ticker, uint32_t deadline)
 {
-    void* tmp = *p1;
-    *p1 = *p2;
-    *p2 = tmp;
+    return ((int32_t)ticker - (int32_t)deadline >= 0);
 }
+
+
+// static inline void swap_ptrs(void** p1, void** p2)
+// {
+//     void* tmp = *p1;
+//     *p1 = *p2;
+//     *p2 = tmp;
+// }
 
 
 
@@ -374,17 +337,13 @@ void psched_init()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    highQueue = initialize_deque();
-    medQueue = initialize_deque();
-    lowQueue = initialize_deque();
+    gTicks = 0;
+    gMissedDeadlines = 0;
 
+    deadHeap = &heap1;
+    relHeap = &heap2;
 
-    currHigh = &highHeap1;
-    currMed = &medHeap1;
-    currLow = &lowHeap1;
-    nextHigh = &highHeap2;
-    nextMed = &medHeap2;
-    nextLow = &lowHeap2;
+    incomingThreads = initialize_deque();
 
     main_thread = (thread_t*)kMalloc(sizeof(thread_t));
     main_thread->thread_status = RUNNING;
@@ -402,9 +361,15 @@ void psched_deinit()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    destroy_deque(highQueue);
-    destroy_deque(medQueue);
-    destroy_deque(lowQueue);
+    destroy_deque(incomingThreads);
+
+
+    for (size_t i = 0; i < MAX_NODES; i++)
+    {
+        if (deadHeap->heap[i].thread != NULL) kFree(deadHeap->heap[i].thread);
+        if (relHeap->heap[i].thread != NULL) kFree(relHeap->heap[i].thread);
+    }
+
 
     kFree(curr_thread);     //Free memory occupied by thread objects
     kFree(main_thread);
@@ -417,11 +382,34 @@ void psched_deinit()
 
 
 
+
+
+sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t period, thread_periodicity_e periodicity)
+{
+    thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
+    new_thread->period = period;
+    new_thread->periodicity = periodicity;
+
+    push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
+
+    return SYS_OK;
+}
+
+
+
+
+
+
+
+
+
+
 inline void next_thread()
 {
 
     if (sched_init)
     {
+        gTicks++;
 
         __asm__ __volatile__ (
             "cps #0x1F\n"
@@ -430,99 +418,84 @@ inline void next_thread()
             : "=r"(curr_thread->sp)
         );
 
- 
 
-        while(highQueue->size > 0)
+        while(incomingThreads->size > 0)
         {
-            thread_t targ;
-            pop_front(highQueue, (char*)(&targ), sizeof(thread_t));
-            smart_insert(currHigh, &targ);
-        }
+            thread_t* thread;
+            size_t a;
+            pop_front(incomingThreads, (char**)(&thread), &a);
 
-        while(medQueue->size > 0)
-        {
-            thread_t targ;
-            pop_front(medQueue, (char*)(&targ), sizeof(thread_t));
-            smart_insert(currMed, &targ);
-        }
+            thread->release_time = gTicks;
+            thread->deadline = gTicks + thread->period;
+            thread->thread_status = PENDING;
 
-        while(lowQueue->size > 0)
-        {
-            thread_t targ;
-            pop_front(lowQueue, (char*)(&targ), sizeof(thread_t));
-            smart_insert(currLow, &targ);
+            insert_node(deadHeap, thread, thread->deadline);
         }
 
 
-        bool priority_set = false;
+        bool thread_found = false;
 
-
-        while(currHigh->curr_index > 0)
+        while (relHeap->curr_index > 0 && passed_deadline(gTicks, relHeap->heap[0].thread->release_time))
         {
-            heap_node_t next_high;
-            pop_heap(&next_high, currHigh);
-
-            if(next_high.thread->thread_status == PENDING || next_high.thread->thread_status == RUNNING)
-            {
-                curr_thread = next_high.thread;
-                smart_insert(nextHigh, next_high.thread);
-
-                priority_set = true;
-                break;
-            }
-
-            else kFree(next_high.thread); //Thread has finished executing, we can deallocate
+            thread_t* thread;
+            pop_heap(relHeap, &thread);
+            insert_node(deadHeap, thread, thread->deadline);
         }
-
         
-        while(!priority_set && currMed->curr_index > 0 && nextHigh->curr_index == 0)
+
+        while(deadHeap->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
         {
-            heap_node_t next_med;
-            pop_heap(&next_med, currMed);
+            thread_t* thread;
+            pop_heap(deadHeap, &thread);
 
-            if(next_med.thread->thread_status == PENDING || next_med.thread->thread_status == RUNNING)
+            if (thread->thread_status == FINISHED)
             {
-                curr_thread = next_med.thread;
-                smart_insert(nextMed, next_med.thread);
+                if (thread->periodicity == PERIODIC)
+                {
+                    do 
+                    {
+                        thread->deadline += thread->period;
+                    }   while (thread->deadline <= gTicks);
 
-                priority_set = true;
-                break;
+                    do 
+                    {
+                        thread->release_time += thread->period;
+                    }   while (thread->release_time < thread->deadline - thread->period);
+
+                    if (passed_deadline(gTicks, thread->release_time)) //Will nominally fire on equality
+                    {
+                        thread->thread_status = PENDING;
+                    }
+
+                    else //Add to release heap
+                    {
+                        insert_node(relHeap, thread, thread->release_time); 
+                    }
+
+                }
+
+                else 
+                {
+                    kFree(thread);
+                }
+
             }
 
-            else kFree(next_med.thread);
-        }
-
-
-        while(!priority_set && currLow->curr_index > 0 && nextHigh->curr_index == 0 && nextMed->curr_index == 0)
-        {
-            heap_node_t next_low;
-            pop_heap(&next_low, currLow);
-
-            if(next_low.thread->thread_status == PENDING || next_low.thread->thread_status == RUNNING)
+            if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
             {
-                curr_thread = next_low.thread;
-                smart_insert(nextLow, next_low.thread);
-
-                priority_set = true;
+                curr_thread = thread;
+                thread_found = true;
+                insert_node(deadHeap, thread, thread->deadline);
                 break;
             }
-
-            else kFree(next_low.thread);
         }
 
+     
 
-        if (!priority_set) //Either no valid tasks set or we ran the last one last cycle
+        if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
         {
             curr_thread = main_thread;
         }
-
-
-        if(currHigh->curr_index == 0 && nextHigh->curr_index > 0)
-            swap_ptrs((void**)(&currHigh), (void**)(&nextHigh));
-        if(currMed->curr_index == 0 && nextMed->curr_index > 0)
-            swap_ptrs((void**)(&currMed), (void**)(&nextMed));
-        if(currLow->curr_index == 0 && nextLow->curr_index > 0)
-            swap_ptrs((void**)(&currLow), (void**)(&nextLow));
 
 
         switch (curr_thread->thread_status)
