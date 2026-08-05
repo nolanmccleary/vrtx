@@ -99,7 +99,7 @@ deque_op_e push_back(deque_t* root, char* payload, size_t payload_size)
 
 int pop_front(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (*capacity < root->head->capacity)) return -1;
+    if (root->size < 1) return -1;
 
     *capacity = root->head->capacity;
     *dest = root->head->payload;
@@ -121,7 +121,7 @@ int pop_front(deque_t* root, char** dest, size_t* capacity)
 
 int pop_back(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (*capacity < root->tail->capacity)) return -1;
+    if (root->size < 1) return -1;
 
     *capacity = root->tail->capacity;
     *dest = root->tail->payload;
@@ -143,7 +143,7 @@ int pop_back(deque_t* root, char** dest, size_t* capacity)
 
 int peek_front(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (*capacity < root->head->capacity)) return -1;
+    if (root->size < 1) return -1;
 
     *capacity = root->head->capacity;
     *dest = root->head->payload;
@@ -155,7 +155,7 @@ int peek_front(deque_t* root, char** dest, size_t* capacity)
 
 int peek_back(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (*capacity < root->tail->capacity)) return -1;
+    if (root->size < 1) return -1;
 
     *capacity = root->tail->capacity;
     *dest = root->tail->payload;

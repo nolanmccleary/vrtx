@@ -20,7 +20,7 @@ typedef enum
 
 typedef struct 
 {
-    int order;
+    uint32_t order;
     thread_t* thread;
 }   heap_node_t;
 

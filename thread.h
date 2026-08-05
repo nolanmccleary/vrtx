@@ -2,6 +2,7 @@
 #define __THREAD_H__
 
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "system.h"
 
@@ -34,6 +35,8 @@ typedef struct
 
     uint32_t release_time;
     uint32_t deadline;
+
+    bool dirty;
     thread_status_e thread_status;
 
     char stack[THREAD_STACK_SIZE];

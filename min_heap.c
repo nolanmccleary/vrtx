@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include "aux.h"
 #include "min_heap.h"
 #include "thread.h"
 
@@ -32,7 +33,7 @@ static inline void percolate_up(heap_t* heap, int index)
 {
     int parent_index = find_parent_index(index);
 
-    if((index == 0) || (heap->heap[index].order >= heap->heap[parent_index].order)) return;
+    if((index == 0) || geq_wrapped(heap->heap[index].order, heap->heap[parent_index].order)) return;
     
     else
     {
@@ -56,13 +57,13 @@ static inline void percolate_down(heap_t* heap, int index)
 
     if(in_range(heap->curr_index, left_child_index))
     {
-        swappable = heap->heap[left_child_index].order < min_order_node.order;
+        swappable = lt_wrapped(heap->heap[left_child_index].order, min_order_node.order);
         if(swappable) min_order_node = heap->heap[left_child_index];
     }
 
     if(in_range(heap->curr_index, right_child_index))
     {
-        swappable_right = heap->heap[right_child_index].order < min_order_node.order;
+        swappable_right = lt_wrapped(heap->heap[right_child_index].order, min_order_node.order);
         if(swappable_right) min_order_node = heap->heap[right_child_index];
     }
 

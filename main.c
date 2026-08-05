@@ -183,11 +183,21 @@ static void sdram_test(void)
 
 ////////////////////////////// Sched test /////////////////////////////////////////
 
+/* Run-to-completion jobs: each release does one bounded unit of work, bumps its
+   completion counter, then RETURNS. Returning lands on the scheduler's thread_exit
+   trampoline, which marks the task FINISHED so EDF re-arms it (periodic) or reaps
+   it (aperiodic). So THREAD_COUNT_n counts completed jobs, not raw loop iterations.
+
+   JOB_WORK is the per-job work knob: it must stay small enough that a job finishes
+   within its period (else it overruns and never re-releases cleanly). Larger values
+   make a job span more ticks, so mid-job preemption is easier to observe. */
+#define JOB_WORK 200000u
+
 static sys_exit_e pthread1(thread_status_e* status)
 {
     (void)status;
-    while (1)
-        THREAD_COUNT_1++;
+    for (volatile uint32_t i = 0; i < JOB_WORK; i++) { }
+    THREAD_COUNT_1++;
     return SYS_OK;
 }
 
@@ -195,18 +205,17 @@ static sys_exit_e pthread1(thread_status_e* status)
 static sys_exit_e pthread2(thread_status_e* status)
 {
     (void)status;
-    while (1)
-        THREAD_COUNT_2++;
+    for (volatile uint32_t i = 0; i < JOB_WORK; i++) { }
+    THREAD_COUNT_2++;
     return SYS_OK;
 }
 
 
 static sys_exit_e pthread3(thread_status_e* status)
 {
-    while (TICK_MIRROR < 30000)
-        THREAD_COUNT_3++;
-    *status = FINISHED;
-    while (1);
+    (void)status;
+    for (volatile uint32_t i = 0; i < JOB_WORK; i++) { }
+    THREAD_COUNT_3++;
     return SYS_OK;
 }
 
