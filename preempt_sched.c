@@ -5,6 +5,8 @@
 #include "flags.h"
 #include "system.h"
 #include "thread.h"
+#include "deque.h"
+#include "min_heap.h"
 
 
 

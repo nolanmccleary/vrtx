@@ -3,7 +3,7 @@
 
 
 
-deque_node_t* initialize_deque()
+deque_t* initialize_deque()
 {
     deque_t* root = (deque_t*)kMalloc(sizeof(deque_t));
     root->head = NULL;
@@ -63,7 +63,7 @@ deque_op_e push_front(deque_t* root, char* payload, size_t payload_size)
 
     root->size++;
 
-    return DEQUE_OP_OK
+    return DEQUE_OP_OK;
 }
 
 
@@ -92,18 +92,18 @@ deque_op_e push_back(deque_t* root, char* payload, size_t payload_size)
 
     root->size++;
 
-    return DEQUE_OP_OK
+    return DEQUE_OP_OK;
 }
 
 
 
-deque_op_e pop_front(deque_t* root, char** dest, size_t* capacity)
+int pop_front(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (capacity < root->head->capacity)) return -1; 
+    if ((root->size < 1) || (*capacity < root->head->capacity)) return -1;
 
     *capacity = root->head->capacity;
     *dest = root->head->payload;
-    
+
     deque_node_t* tmp = root->head;
     root->head = root->head->prev;
 
@@ -119,9 +119,9 @@ deque_op_e pop_front(deque_t* root, char** dest, size_t* capacity)
 
 
 
-deque_op_e pop_back(deque_t* root, char** dest, size_t* capacity)
+int pop_back(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (capacity < root->tail->capacity)) return -1; 
+    if ((root->size < 1) || (*capacity < root->tail->capacity)) return -1;
 
     *capacity = root->tail->capacity;
     *dest = root->tail->payload;
@@ -141,9 +141,9 @@ deque_op_e pop_back(deque_t* root, char** dest, size_t* capacity)
 
 
 
-deque_op_e peek_front(deque_t* root, char** dest, size_t* capacity)
+int peek_front(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (capacity < root->head->capacity)) return -1; 
+    if ((root->size < 1) || (*capacity < root->head->capacity)) return -1;
 
     *capacity = root->head->capacity;
     *dest = root->head->payload;
@@ -153,9 +153,9 @@ deque_op_e peek_front(deque_t* root, char** dest, size_t* capacity)
 
 
 
-deque_op_e peek_back(deque_t* root, char** dest, size_t* capacity)
+int peek_back(deque_t* root, char** dest, size_t* capacity)
 {
-    if ((root->size < 1) || (capacity < root->tail->capacity)) return -1; 
+    if ((root->size < 1) || (*capacity < root->tail->capacity)) return -1;
 
     *capacity = root->tail->capacity;
     *dest = root->tail->payload;

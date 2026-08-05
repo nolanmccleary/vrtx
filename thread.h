@@ -2,6 +2,9 @@
 #define __THREAD_H__
 
 
+#include <stdint.h>
+#include "system.h"
+
 
 #define THREAD_STACK_SIZE 0x2000
 #define MODE_SYS          0x1F

@@ -12,10 +12,10 @@ typedef enum
 }   deque_op_e;
 
 
-typedef struct
+typedef struct deque_node
 {
     struct deque_node* next;
-    struct deque_node_t* prev;
+    struct deque_node* prev;
     char* payload;
     size_t capacity;
 }   deque_node_t;

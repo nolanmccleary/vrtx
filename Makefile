@@ -29,7 +29,7 @@ endif
 FLAGS   := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Iboot
 LIBGCC  := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
 
-SRCS := startup.s main.c allocator.c preempt_sched.c $(BOARD_SRCS)
+SRCS := startup.s main.c allocator.c preempt_sched.c deque.c min_heap.c $(BOARD_SRCS)
 
 all: build/qlonq.elf build/qlonq.bin
 
