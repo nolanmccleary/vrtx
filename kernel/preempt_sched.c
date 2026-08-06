@@ -8,6 +8,7 @@
 #include "thread.h"
 #include "min_heap.h"
 #include "deque.h"
+#include "ktrace.h"
 
 
 
@@ -160,6 +161,8 @@ inline void next_thread()
 
     if (sched_init)
     {
+        KTRACE_TICK_ENTER();
+
         gTicks++;
 
         __asm__ __volatile__ (
@@ -247,6 +250,7 @@ inline void next_thread()
 
                 curr_thread = thread;
                 thread_found = true;
+                KTRACE_SWITCH_IN(thread);
                 insert_node(deadHeap, thread, thread->deadline);
                 break;
             }
@@ -280,6 +284,8 @@ inline void next_thread()
                     break;
 
         }
+
+        KTRACE_TICK_EXIT();
     }
 }
 

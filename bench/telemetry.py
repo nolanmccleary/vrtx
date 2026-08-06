@@ -12,6 +12,7 @@ STATUS_BASE = 0xFFFF0000            # legacy flag region, zeroed on load
 TELEM_MAGIC = 0x51544C30            # "QTL0"
 TELEM_DONE  = 2
 HDR_WORDS   = 14                    # u32 fields before metric[]
+RUN_SECONDS = 6                     # uninterrupted target run before halt+read
 
 os.chdir(ROOT)
 
@@ -62,22 +63,17 @@ ocd('reg cpsr 0x1d3')
 ocd(f'reg pc 0x{entry:08x}')
 ocd('resume')
 
-# --- wait for the bench to finish (state -> DONE) ---
+# Let the bench run UNINTERRUPTED to completion, then halt once. Polling by
+# halt/resume over the slow USB-Blaster starves the target of run time (and would
+# perturb timing), so we wait a fixed window and read once at the end.
 STATE_OFF = 8 * 4
-done = False
-for _ in range(30):
-    time.sleep(0.5)
-    ocd('halt')
-    st = read_words(telem + STATE_OFF, 1)
-    ocd('resume')
-    if st and st[0] == TELEM_DONE:
-        done = True
-        break
-if not done:
-    print("WARN: telemetry never reached DONE; decoding current contents anyway")
-
-# --- read header ---
+time.sleep(RUN_SECONDS)
 ocd('halt')
+st = read_words(telem + STATE_OFF, 1)
+if not (st and st[0] == TELEM_DONE):
+    print(f"WARN: state={st[0] if st else '?'} (not DONE); decoding current contents")
+
+# --- read header (target stays halted) ---
 hdr = read_words(telem, HDR_WORDS)
 (magic, version, cpu_hz, gtimer_hz, cal_cycles, cal_gtimer,
  read_ovf, probe_ovf, state, bench_id, n_metrics, k, maxp, nb) = hdr

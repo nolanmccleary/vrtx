@@ -44,6 +44,11 @@ SRCS := bsp/startup.s main.c bsp/bsp.c \
 ifneq ($(WORKLOAD),demo)
 DEFS += -DBENCH_BUILD
 SRCS += bench/pmu.c bench/telemetry.c
+# If the workload ships a ktrace override, force-include it into every TU so it wins
+# over kernel/ktrace.h's no-op defaults and instruments the kernel (Phase 2+).
+ifneq ($(wildcard bench/ktrace_$(WORKLOAD).h),)
+FLAGS += -include bench/ktrace_$(WORKLOAD).h
+endif
 endif
 
 # The image name is constant but its contents depend on WORKLOAD (different SRCS).
