@@ -1,0 +1,211 @@
+#include <stdint.h>
+#include "bsp.h"
+#include "boot.h"
+#include "sequencer.h"
+#include "flags.h"
+#include "allocator.h"       /* heap_init — brought up in c_startup */
+#include "preempt_sched.h"   /* next_thread — the tick handler (direct call; see note) */
+
+#if ENABLE_DCACHE && !ENABLE_MMU
+#error ENABLE_DCACHE requires ENABLE_MMU
+#endif
+
+
+#define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
+#define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
+#define GICC_CTLR       (*(volatile uint32_t *)0xFFFEC100)
+#define GICC_PMR        (*(volatile uint32_t *)0xFFFEC104)
+
+#define GTIMER_CNTRL    (*(volatile uint32_t *)0xFFFEC200)
+#define GTIMER_CNTRH    (*(volatile uint32_t *)0xFFFEC204)
+#define GTIMER_CTRL     (*(volatile uint32_t *)0xFFFEC208)
+#define GTIMER_ISR      (*(volatile uint32_t *)0xFFFEC20C)
+#define GTIMER_CMPL     (*(volatile uint32_t *)0xFFFEC210)
+#define GTIMER_CMPH     (*(volatile uint32_t *)0xFFFEC214)
+#define GTIMER_AUTOINC  (*(volatile uint32_t *)0xFFFEC218)
+
+#define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
+
+
+void bsp_timer_start(void)
+{
+    GTIMER_CTRL    = 0;
+    GTIMER_ISR     = 1;
+    GTIMER_AUTOINC = 199999;
+    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
+    GTIMER_CMPH    = GTIMER_CNTRH;
+    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+}
+
+
+void bsp_gic_init(void)
+{
+    GICD_CTLR       = 1;
+    GICD_ISENABLER0 |= (1 << 27);
+    GICC_PMR        = 0xFF;
+    GICC_CTLR       = 1;
+}
+
+
+/////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
+
+
+void c_reset_handler(void)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x80);
+}
+
+
+void c_undef_handler(void)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x04);
+}
+
+
+void c_swi_handler(void)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x08);
+}
+
+
+void c_prefetch_handler(void)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x0C);
+}
+
+
+void c_data_handler(void)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x10);
+}
+
+
+void c_irq_handler(int id)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x18);
+    switch(id)
+    {
+        case 0x1b:
+            WDT_L4 = 0x76;
+            GTIMER_ISR = 1;
+            FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
+            next_thread();   /* direct call; strong symbol when the scheduler is linked.
+                                Weak-symbol decoupling arrives with the first scheduler-
+                                less workload (Phase 3), keeping this hot path unchanged. */
+            break;
+
+        default:
+            break;
+    }
+}
+
+
+void c_fiq_handler(int id)
+{
+    FLAG_WRITE(VECTOR_FLAG, 0x1C);
+    (void)id;
+}
+
+
+///////////////////////////////////////////// MMU INIT /////////////////////////////
+
+static void mmu_init(void)
+{
+#if ENABLE_MMU
+    volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
+    uint32_t r;
+
+    for (int i = 4095; i >= 1; i--)
+        ttb[i] = ((uint32_t)i << 20) | 0x0DE2u;
+    ttb[0] = 0x00015DE6u;  /* section 0: normal, WBWA, shareable */
+
+    uint32_t ttbr = 0x00100000u;
+    uint32_t dacr = 0x55555555u;
+    uint32_t sctlr_bits = 0x1u;  /* M = MMU */
+#if ENABLE_DCACHE
+    sctlr_bits |= 0x4u;          /* C = D-cache */
+#endif
+#if ENABLE_ICACHE
+    sctlr_bits |= 0x1000u;       /* I = I-cache */
+#endif
+    __asm__ volatile (
+        "mov     %0, #0\n\t"
+        "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0 */
+        "mcr     p15, 0, %1, c2, c0, 0\n\t"   /* TTBR0 */
+        "mcr     p15, 0, %2, c3, c0, 0\n\t"   /* DACR = all client */
+        "dsb\n\t"
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"
+        "orr     %0, %0, %3\n\t"
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "isb\n"
+        : "=&r"(r)
+        : "r"(ttbr), "r"(dacr), "r"(sctlr_bits)
+        : "memory"
+    );
+#elif ENABLE_ICACHE
+    uint32_t r;
+    __asm__ volatile (
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"
+        "orr     %0, %0, #0x1000\n\t"          /* I = I-cache (no MMU needed) */
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "isb\n"
+        : "=&r"(r) : : "memory"
+    );
+#endif
+}
+
+
+///////////////////////////////////////////// SDRAM TEST ////////////////////////////////
+#define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
+#define SDRAM_TEST_WORDS 64
+
+void bsp_sdram_selftest(void)
+{
+    volatile uint32_t *p = SDRAM_BASE;
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++)
+        p[i] = i;
+
+    __asm__ volatile ("dsb" ::: "memory");
+    FLAG_WRITE(GENERAL_FLAG, 0xA002);
+
+    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
+        if (p[i] != i) {
+            FLAG_WRITE(SDRAM_TEST_RESULT, (uint32_t)&p[i]);
+            FLAG_WRITE(GENERAL_FLAG, 0x813);
+            return;
+        }
+    }
+
+    FLAG_WRITE(GENERAL_FLAG, 0x814);
+    FLAG_WRITE(SDRAM_TEST_RESULT, 0xDEAD0000);
+}
+
+
+///////////////////////////////////////////// STARTUP /////////////////////////////
+
+static void bsp_early_init(void)
+{
+#ifdef BOARD_DE1_SOC
+    pll_init();
+    scan_mgr_init();
+    sdram_ctrl_init();
+    uint32_t cal = (uint32_t)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    FLAG_WRITE(SDRAM_TEST_RESULT, cal);
+    PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
+    PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
+    NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
+#endif
+    mmu_init();
+    FLAG_WRITE(GENERAL_FLAG, 0xBB01);
+}
+
+
+/* Reset path lands here (startup.s: bl c_startup). Bring the platform to a usable
+   runtime — hardware + heap — then return so main() can dispatch the workload.
+   GIC/timer/scheduler are intentionally NOT started here; the workload owns those. */
+void c_startup(void)
+{
+    bsp_early_init();
+    heap_init();
+}

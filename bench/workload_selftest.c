@@ -2,13 +2,13 @@
 #include "pmu.h"
 #include "telemetry.h"
 #include "flags.h"
+#include "workload.h"
 
 /*
  * Phase 0 self-test: measure a busy loop of known length to validate the entire
- * instrumentation pipeline (PMU enable -> measure -> record -> host decode) before
- * any real workload exists. Runs with interrupts off and no scheduler, so the
- * measurement is isolated from ticks/preemption. Warm-cache: WARMUP unrecorded
- * iterations precede ITERS recorded ones.
+ * instrumentation pipeline (PMU enable -> measure -> record -> host decode). Runs
+ * with interrupts off and no scheduler, so the measurement is isolated from
+ * ticks/preemption. Warm-cache: WARMUP unrecorded iterations precede ITERS recorded.
  */
 
 #define BENCH_ID_SELFTEST 0
@@ -28,7 +28,7 @@ static uint32_t __attribute__((noinline)) busy(uint32_t n)
 }
 
 
-void bench_main(void)
+static void selftest_run(void)
 {
     uint32_t read_ovf, probe_ovf;
 
@@ -63,3 +63,6 @@ void bench_main(void)
 
     for (;;) { }
 }
+
+
+const workload_t g_workload = { "selftest", 0, selftest_run };

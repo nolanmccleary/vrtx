@@ -32,21 +32,32 @@ endif
 FLAGS   := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Ibsp -Ikernel -Ibench
 LIBGCC  := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
 
-SRCS := bsp/startup.s main.c kernel/allocator.c kernel/preempt_sched.c kernel/deque.c kernel/min_heap.c $(BOARD_SRCS)
+# One workload (benchmark/demo) per image, selected by WORKLOAD= (default: demo).
+# main() dispatches to that workload's g_workload.run(). Non-demo workloads are
+# instrumented (pull in the pmu/telemetry layer).
+WORKLOAD ?= demo
 
-# Benchmark builds (one image per benchmark): make BENCH=selftest ...
-# Pulls in the instrumentation layer and the selected bench/bench_<name>.c, and
-# defines BENCH_BUILD so main.c dispatches to bench_main() and boots quiescent.
-BENCH ?=
-ifneq ($(BENCH),)
+SRCS := bsp/startup.s main.c bsp/bsp.c \
+        kernel/allocator.c kernel/preempt_sched.c kernel/deque.c kernel/min_heap.c \
+        $(BOARD_SRCS) bench/workload_$(WORKLOAD).c
+
+ifneq ($(WORKLOAD),demo)
 DEFS += -DBENCH_BUILD
-SRCS += bench/pmu.c bench/telemetry.c bench/bench_$(BENCH).c
+SRCS += bench/pmu.c bench/telemetry.c
+endif
+
+# The image name is constant but its contents depend on WORKLOAD (different SRCS).
+# At parse time, if the selected workload differs from the last build, drop the image
+# so it relinks — otherwise make sees the .elf up-to-date and runs the wrong workload.
+LAST_WORKLOAD := $(shell cat build/config.sig 2>/dev/null)
+ifneq ($(WORKLOAD),$(LAST_WORKLOAD))
+$(shell mkdir -p build && echo '$(WORKLOAD)' > build/config.sig && rm -f build/qlonq.elf build/qlonq.bin)
 endif
 
 all: build/qlonq.elf build/qlonq.bin
 
 build/qlonq.elf: $(SRCS) | build
-	$(CC) $(FLAGS) $(DEFS) -T $(LD_SCRIPT) -Wl,--build-id=none -o $@ $^ $(LIBGCC)
+	$(CC) $(FLAGS) $(DEFS) -T $(LD_SCRIPT) -Wl,--build-id=none -o $@ $(SRCS) $(LIBGCC)
 	$(CROSS)-objdump -d $@ > build/qlonq.dis
 
 build/qlonq.bin: build/qlonq.elf
@@ -73,9 +84,9 @@ test: build/qlonq.elf
 	python3 test.py
 
 # Build + run a benchmark image and decode its telemetry over JTAG.
-#   make BENCH=selftest bench-run
+#   make WORKLOAD=selftest bench-run
 bench-run: all
-	@if [ -z "$(BENCH)" ]; then echo "set BENCH=<name>, e.g. make BENCH=selftest bench-run"; exit 1; fi
+	@if [ "$(WORKLOAD)" = "demo" ]; then echo "set WORKLOAD=<name>, e.g. make WORKLOAD=selftest bench-run"; exit 1; fi
 	python3 bench/telemetry.py
 
 clean:
