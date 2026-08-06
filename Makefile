@@ -1,6 +1,9 @@
 CROSS   := arm-none-eabi
 CC      := $(CROSS)-gcc
 OBJCOPY := $(CROSS)-objcopy
+NM      := $(CROSS)-nm
+
+OCD_CFG := openocd/de1soc.cfg
 
 BOARD         ?= de1-soc
 ENABLE_MMU    ?= 1
@@ -43,5 +46,24 @@ build/qlonq.bin: build/qlonq.elf
 build:
 	mkdir -p build
 
+# Load the image over JTAG and run it (board must be in a clean, non-Linux boot).
+# OpenOCD resolves relative paths from the repo root; flags are zeroed since they
+# live in a NOLOAD section that load_image does not touch.
+flash: build/qlonq.elf
+	@ENTRY=0x$$($(NM) build/qlonq.elf | awk '$$3=="_reset_handler"{print $$1}'); \
+	pkill -9 openocd 2>/dev/null || true; sleep 0.5; \
+	openocd -f $(OCD_CFG) \
+	  -c "init" -c "halt" \
+	  -c "load_image build/qlonq.elf" \
+	  -c "mww phys 0xffff0000 0 12" \
+	  -c "reg cpsr 0x1d3" -c "reg pc $$ENTRY" \
+	  -c "resume" -c "shutdown"
+
+# Full on-hardware test harness (loads, runs, and checks the flag scoreboard).
+test: build/qlonq.elf
+	python3 test.py
+
 clean:
 	rm -rf build
+
+.PHONY: all flash test clean

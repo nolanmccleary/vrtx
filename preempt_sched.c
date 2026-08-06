@@ -145,7 +145,10 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t peri
     new_thread->periodicity = periodicity;
 
     new_thread->func = func;
-    new_thread->sp = new_thread->stack + THREAD_STACK_SIZE;
+    /* Round down to an 8-byte boundary: -fshort-enums can place stack[] at a
+       non-word offset in thread_t, which would leave sp misaligned and fault
+       the first STM/STR in start_thread / the thread prologue (AAPCS wants 8). */
+    new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
     
 
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
