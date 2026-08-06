@@ -1,10 +1,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "allocator.h"
-#include "boot/boot.h"
+#include "boot.h"
 #include "flags.h"
 #include "preempt_sched.h"
-#include "boot/sequencer.h"
+#include "sequencer.h"
 #include "thread.h"
 
 #if ENABLE_DCACHE && !ENABLE_MMU
@@ -237,16 +237,28 @@ void c_startup(void)
     mmu_init();
     FLAG_WRITE(GENERAL_FLAG, 0xBB01);
     heap_init();
+#ifndef BENCH_BUILD
+    /* Scheduler + tick bringup. Skipped for bench builds so the image boots quiescent
+       (no timer IRQ, no watchdog dependency); bench_main brings up what it needs. */
     psched_init();
     gic_init();
     gtimer_init();
+#endif
 }
 
 
 ///////////////////////////////////////////// MAIN LOOP /////////////////////////////
 
+#ifdef BENCH_BUILD
+extern void bench_main(void);   /* provided by the selected bench/bench_*.c */
+#endif
+
 void main(void)
 {
+#ifdef BENCH_BUILD
+    bench_main();               /* owns pmu/telemetry setup, workload, and reporting */
+    return;
+#else
     add_thread(pthread1, 67, PERIODIC);
     add_thread(pthread2, 67, PERIODIC);
     add_thread(pthread3, 69, APERIODIC);
@@ -269,4 +281,5 @@ void main(void)
         FLAG_WRITE(ALLOC_CHECK, *test3);
         FLAG_WRITE(GENERAL_FLAG, 0x69);
     }
+#endif /* BENCH_BUILD */
 }

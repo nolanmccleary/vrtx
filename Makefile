@@ -25,14 +25,23 @@ endif
 LD_SCRIPT := linker/$(BOARD).ld
 
 ifeq ($(BOARD),de1-soc)
-BOARD_SRCS := boot/boot.c boot/sequencer.c
+BOARD_SRCS := bsp/boot.c bsp/sequencer.c
 DEFS += -DBOARD_DE1_SOC
 endif
 
-FLAGS   := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Iboot
+FLAGS   := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Ibsp -Ikernel -Ibench
 LIBGCC  := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
 
-SRCS := startup.s main.c allocator.c preempt_sched.c deque.c min_heap.c $(BOARD_SRCS)
+SRCS := bsp/startup.s main.c kernel/allocator.c kernel/preempt_sched.c kernel/deque.c kernel/min_heap.c $(BOARD_SRCS)
+
+# Benchmark builds (one image per benchmark): make BENCH=selftest ...
+# Pulls in the instrumentation layer and the selected bench/bench_<name>.c, and
+# defines BENCH_BUILD so main.c dispatches to bench_main() and boots quiescent.
+BENCH ?=
+ifneq ($(BENCH),)
+DEFS += -DBENCH_BUILD
+SRCS += bench/pmu.c bench/telemetry.c bench/bench_$(BENCH).c
+endif
 
 all: build/qlonq.elf build/qlonq.bin
 
@@ -63,7 +72,13 @@ flash: build/qlonq.elf
 test: build/qlonq.elf
 	python3 test.py
 
+# Build + run a benchmark image and decode its telemetry over JTAG.
+#   make BENCH=selftest bench-run
+bench-run: all
+	@if [ -z "$(BENCH)" ]; then echo "set BENCH=<name>, e.g. make BENCH=selftest bench-run"; exit 1; fi
+	python3 bench/telemetry.py
+
 clean:
 	rm -rf build
 
-.PHONY: all flash test clean
+.PHONY: all flash test bench-run clean

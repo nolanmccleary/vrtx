@@ -9,7 +9,9 @@ MEMORY {
     OCRAM (rwx) : ORIGIN = 0xFFFF0000, LENGTH = 64K
 }
 
-_stack_size     = 0x2000;   /* 8KB for FIQ/IRQ/SVC/SYS */
+_stack_size     = 0x1000;   /* 4KB for FIQ/IRQ/SVC/SYS (was 8KB; trimmed to free OCRAM
+                               for the telemetry region — deepest use is percolate
+                               recursion at depth ~log2(MAX_NODES) plus IRQ frames) */
 _abt_stack_size = 0x200;    /* 512 bytes — handler only needs a few words */
 _und_stack_size = 0x200;
 _bank_size = 0x80; /*128 tasks */
@@ -69,6 +71,16 @@ SECTIONS {
         _bss_end = .;
     } > OCRAM
 
+    /* Benchmark telemetry — NOLOAD results region, zeroed at runtime by
+       telemetry_init(). Only present when a bench build pulls in telemetry.c. */
+    .telemetry (NOLOAD) : {
+        . = ALIGN(8);
+        _telemetry_start = .;
+        KEEP(*(.telemetry))
+        . = ALIGN(8);
+        _telemetry_end = .;
+    } > OCRAM
+
     /* OCRAM stacks — top-down: UND, ABT, FIQ, IRQ, SVC, SYS */
     _und_stack_top = ORIGIN(OCRAM) + LENGTH(OCRAM) - 4;
     _abt_stack_top = _und_stack_top - _und_stack_size;
@@ -77,4 +89,7 @@ SECTIONS {
     _svc_stack_top = _irq_stack_top - _stack_size;
     _sys_stack_top = _svc_stack_top - _stack_size;
 
+    /* Ensure the telemetry region does not grow into the lowest (SYS) stack. */
+    ASSERT(_telemetry_end <= _sys_stack_top - _stack_size,
+           "ERROR: .telemetry overflows OCRAM into the SYS stack")
 }
