@@ -2,7 +2,6 @@
 #include "pmu.h"
 #include "telemetry.h"
 #include "flags.h"
-#include "workload.h"
 
 /*
  * Phase 0 self-test: measure a busy loop of known length to validate the entire
@@ -28,7 +27,7 @@ static uint32_t __attribute__((noinline)) busy(uint32_t n)
 }
 
 
-static void selftest_run(void)
+void selftest_run(void)
 {
     uint32_t read_ovf, probe_ovf;
 
@@ -63,6 +62,3 @@ static void selftest_run(void)
 
     for (;;) { }
 }
-
-
-const workload_t g_workload = { "selftest", 0, selftest_run };

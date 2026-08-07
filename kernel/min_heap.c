@@ -132,7 +132,7 @@ heap_op_e pop_heap(heap_t* heap, thread_t** thread)
 
     else
     {
-        thread = NULL;
+        *thread = NULL;
         return OP_FAILED;
     }
 }

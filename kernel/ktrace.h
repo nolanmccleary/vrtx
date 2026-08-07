@@ -2,36 +2,40 @@
 #define __KTRACE_H__
 
 /*
- * Kernel trace hooks. Default to no-ops so the production kernel is unaffected. An
- * instrumented bench build overrides any subset via a forced include
- * (-include bench/ktrace_<workload>.h) that defines these before this header's
- * guards, letting Phase 2+ measure the kernel without editing kernel source.
- *
- * Call sites are wired into the kernel in the phase that consumes them (scheduler
- * in Phase 2, allocator in Phase 3), alongside their definitions, so each addition
- * is proven zero-cost-when-off at the point it lands.
+ * Kernel trace hooks. Real per-tick measurement only in the schedbench build
+ * (-DMODE_SCHEDBENCH from the Makefile); no-ops otherwise, so the production kernel
+ * is unaffected. The [enter, exit] bracket spans next_thread's body:
+ *   sched_all = full next_thread() cost per tick; dispatch = ticks that ran a task;
+ *   idle = ticks with none. read overhead is subtracted; hist_record runs after the
+ *   closing timestamp so it stays outside the measured region.
  */
 
-#ifndef KTRACE_TICK_ENTER
-#define KTRACE_TICK_ENTER()     ((void)0)
-#endif
-#ifndef KTRACE_TICK_EXIT
-#define KTRACE_TICK_EXIT()      ((void)0)
-#endif
-#ifndef KTRACE_SWITCH_IN
-#define KTRACE_SWITCH_IN(t)     ((void)0)
-#endif
-#ifndef KTRACE_MALLOC_ENTER
-#define KTRACE_MALLOC_ENTER(sz) ((void)0)
-#endif
-#ifndef KTRACE_MALLOC_EXIT
-#define KTRACE_MALLOC_EXIT(p)   ((void)0)
-#endif
-#ifndef KTRACE_FREE_ENTER
-#define KTRACE_FREE_ENTER(p)    ((void)0)
-#endif
-#ifndef KTRACE_FREE_EXIT
-#define KTRACE_FREE_EXIT()      ((void)0)
+#ifdef MODE_SCHEDBENCH
+
+#include "pmu.h"
+#include "telemetry.h"
+
+enum { SM_SCHED_ALL = 0, SM_DISPATCH = 1, SM_IDLE = 2 };
+
+#define KTRACE_TICK_ENTER() \
+    uint32_t _kt = pmu_cycles(); int _kdisp = 0
+
+#define KTRACE_SWITCH_IN(t) \
+    do { (void)(t); _kdisp = 1; } while (0)
+
+#define KTRACE_TICK_EXIT()                                                     \
+    do {                                                                       \
+        uint32_t _kd = telem_correct(pmu_cycles() - _kt);                      \
+        hist_record(&g_telemetry.metric[SM_SCHED_ALL].h, _kd);                 \
+        hist_record(&g_telemetry.metric[_kdisp ? SM_DISPATCH : SM_IDLE].h, _kd); \
+    } while (0)
+
+#else
+
+#define KTRACE_TICK_ENTER() ((void)0)
+#define KTRACE_SWITCH_IN(t) ((void)0)
+#define KTRACE_TICK_EXIT()  ((void)0)
+
 #endif
 
 #endif

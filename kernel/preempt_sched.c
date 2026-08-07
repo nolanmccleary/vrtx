@@ -38,7 +38,7 @@ static void thread_exit()
 
 static inline void start_thread(thread_t* thread)
 {
-    uint32_t* sp = (uint32_t*)thread->sp;
+    uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
 
     //Return From Exception Full Descending (RFEFD) frame (bottom) as well as all the popping stuff etc
     *(--sp) = MODE_SYS;                    // spsr_irq
@@ -147,7 +147,6 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t peri
 
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
-    
 
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
 
@@ -198,7 +197,7 @@ inline void next_thread()
             thread->thread_status = PENDING;
             insert_node(deadHeap, thread, thread->deadline);
         }
-        
+
 
         while(deadHeap->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
         {
@@ -227,7 +226,7 @@ inline void next_thread()
 
                     else //Add to release heap
                     {
-                        insert_node(relHeap, thread, thread->release_time); 
+                        insert_node(relHeap, thread, thread->release_time);
                     }
 
                 }
@@ -256,7 +255,6 @@ inline void next_thread()
             }
         }
 
-     
 
         if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
         {

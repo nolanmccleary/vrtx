@@ -4,7 +4,7 @@
 #include "preempt_sched.h"
 #include "thread.h"
 #include "flags.h"
-#include "workload.h"
+#include "ktrace.h"     /* SM_SCHED_ALL / SM_DISPATCH / SM_IDLE */
 
 /*
  * Scheduler benchmark. Pure payload: main() has already brought up the scheduler,
@@ -55,7 +55,7 @@ static void reset_metrics(void)
 }
 
 
-static void schedbench_run(void)
+void schedbench_run(void)
 {
     uint32_t ro, po;
 
@@ -72,19 +72,10 @@ static void schedbench_run(void)
     for (uint32_t i = 0; i < NTASKS; i++)
         add_thread(job, periods[i], PERIODIC);
 
-    /* Warmup, then discard those samples and collect the steady-state distribution. */
-    while (sample_count() < WARMUP_TICKS) { }
-    reset_metrics();
-    while (sample_count() < TARGET_SAMPLES) { }
-
-    /* Freeze: stop taking ticks so the metrics don't keep growing (and so we stay well
-       below the sustained-load scheduler bug). */
-    __asm__ __volatile__("cpsid i" ::: "memory");
+    /* BUG-HUNT MODE: run uncapped so the sustained-load corruption triggers. */
+    while (sample_count() < 0xFFFFFFFFu) { }
 
     telemetry_done();
     FLAG_WRITE(GENERAL_FLAG, 0x5C);        /* sentinel: bench complete */
     for (;;) { }
 }
-
-
-const workload_t g_workload = { "schedbench", BENCH_ID_SCHEDBENCH, schedbench_run };

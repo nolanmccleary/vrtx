@@ -1,20 +1,33 @@
 #include "bsp.h"
 #include "preempt_sched.h"
-#include "workload.h"
 
 /*
- * System bringup + dispatch. The reset path (startup.s -> c_startup) brings up
- * hardware + heap; main() then performs the standard system initialization that any
- * workload runs on top of, and hands control to the one workload linked into this
- * image. BSP lives in bsp/, the kernel in kernel/, and each benchmark/demo is a
- * pure test payload in bench/ (no system init of its own).
+ * System bringup + dispatch. startup.s -> c_startup brings up hardware + heap;
+ * main() does the standard system init, then runs the one workload selected at
+ * build time (-DMODE_* from the Makefile). Workloads live in bench/ and are pure
+ * test payload.
  */
+
+void demo_run(void);
+void selftest_run(void);
+void schedbench_run(void);
+void stress_run(void);
+
 void main(void)
 {
-    psched_init();
     bsp_gic_init();
     bsp_timer_start();
+    psched_init();
 
-    g_workload.run();
+#if   defined(MODE_SELFTEST)
+    selftest_run();
+#elif defined(MODE_SCHEDBENCH)
+    schedbench_run();
+#elif defined(MODE_STRESS)
+    stress_run();
+#else
+    demo_run();
+#endif
+
     for (;;) { }
 }

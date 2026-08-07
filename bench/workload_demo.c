@@ -5,7 +5,6 @@
 #include "thread.h"
 #include "bsp.h"
 #include "flags.h"
-#include "workload.h"
 
 /*
  * Default workload: the EDF scheduler demo (and the test.py regression baseline).
@@ -47,7 +46,7 @@ static sys_exit_e pthread3(thread_status_e* status)
 }
 
 
-static void demo_run(void)
+void demo_run(void)
 {
     /* System init (scheduler/GIC/tick) already done by main(); this is pure payload. */
     add_thread(pthread1, 67, PERIODIC);
@@ -73,6 +72,3 @@ static void demo_run(void)
         FLAG_WRITE(GENERAL_FLAG, 0x69);
     }
 }
-
-
-const workload_t g_workload = { "demo", 0, demo_run };
