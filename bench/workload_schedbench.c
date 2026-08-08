@@ -17,9 +17,7 @@
 #define BENCH_ID_SCHEDBENCH 1
 #define NTASKS         6
 #define WARMUP_TICKS   256
-/* Capped below the sustained-load abort threshold (a scheduler heap-corruption bug
-   surfaces around ~1400-2200 ticks; see notes). 1000 samples is a solid distribution. */
-#define TARGET_SAMPLES 1000
+#define TARGET_SAMPLES 3000
 
 /* Schedulable task set (U well under 1): each trivial job occupies ~one tick (it
    spins in thread_exit until the next tick preempts it), so demand = sum(1/Pi).
@@ -72,8 +70,13 @@ void schedbench_run(void)
     for (uint32_t i = 0; i < NTASKS; i++)
         add_thread(job, periods[i], PERIODIC);
 
-    /* BUG-HUNT MODE: run uncapped so the sustained-load corruption triggers. */
-    while (sample_count() < 0xFFFFFFFFu) { }
+    /* Warm up, discard those samples, then collect the steady-state distribution. */
+    while (sample_count() < WARMUP_TICKS) { }
+    reset_metrics();
+    while (sample_count() < TARGET_SAMPLES) { }
+
+    /* Stop taking ticks so the histograms hold exactly TARGET_SAMPLES. */
+    __asm__ __volatile__("cpsid i" ::: "memory");
 
     telemetry_done();
     FLAG_WRITE(GENERAL_FLAG, 0x5C);        /* sentinel: bench complete */

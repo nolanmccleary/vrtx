@@ -12,6 +12,8 @@ void demo_run(void);
 void selftest_run(void);
 void schedbench_run(void);
 void stress_run(void);
+void allocbench_run(void);
+void edf_run(void);
 
 void main(void)
 {
@@ -25,6 +27,10 @@ void main(void)
     schedbench_run();
 #elif defined(MODE_STRESS)
     stress_run();
+#elif defined(MODE_ALLOCBENCH)
+    allocbench_run();
+#elif defined(MODE_EDF)
+    edf_run();
 #else
     demo_run();
 #endif

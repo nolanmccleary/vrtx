@@ -187,10 +187,13 @@ _irq_handler:
     cps #0x1f @; Change Processor State --- switch to system mode
     cpsid i @; Change Processor State Interrupt Disable --- no nested interrupts for now
 
-    push {r0-r3, r12} @; store AAPCS regset --- push onto sysmode stack
+    push {r0-r12} @; store the FULL integer register file. A context switch resumes a
+                  @; DIFFERENT task, so r4-r11 (callee-saved, live across the interrupted
+                  @; task's calls) must be part of the saved context -- saving only the
+                  @; AAPCS caller-saved set corrupts a resumed task's r4-r11.
 
     and r1, sp, #4 @; 8-byte align sp
-    sub sp, sp, r1 
+    sub sp, sp, r1
     push {r1, lr} @; push adjustment and lr_sys onto sysmode stack
 
     
@@ -201,14 +204,16 @@ _irq_handler:
 
     cps #0x1f @; switch back to system mode
 
-    pop {r1, lr} @; restore lr_sys 
-    add sp, sp, r1 @; unadjust stack 
+    pop {r1, lr} @; restore lr_sys
+    add sp, sp, r1 @; unadjust stack
 
-    pop {r0-r3, r12} @; restore AAPCS regset 
+    pop {r0-r12} @; restore the FULL integer register file for the resumed task
 
-    cpsie i @; re-enable interrupts
-
-    RFEFD sp! @; Set PC and CPSR
+    @; NOTE: do NOT re-enable IRQs here. RFEFD restores CPSR (with the thread's
+    @; I-bit) atomically with the PC. A `cpsie i` before RFEFD opens a re-entrancy
+    @; window: a tick firing in these last instructions re-enters _irq_handler on
+    @; the already-restored outgoing SP and corrupts the scheduler state.
+    RFEFD sp! @; Set PC and CPSR (re-enables IRQs via restored SPSR)
 
 
 
@@ -231,12 +236,11 @@ _fiq_handler:
     BL _identify_and_clear_source
     BL c_fiq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
 
-    pop {r1, lr} @; restore lr_sys 
-    add sp, sp, r1 @; unadjust stack 
-    pop {r0-r3, r12} @; restore AAPCS regset 
+    pop {r1, lr} @; restore lr_sys
+    add sp, sp, r1 @; unadjust stack
+    pop {r0-r3, r12} @; restore AAPCS regset
 
-    cpsie if @; re-enable interrupts
-
+    @; NOTE: no cpsie here — RFEFD restores CPSR (I/F bits) atomically with the PC.
     RFEFD sp! @; Set PC and CPSR
 
 

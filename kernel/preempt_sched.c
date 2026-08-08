@@ -9,6 +9,7 @@
 #include "min_heap.h"
 #include "deque.h"
 #include "ktrace.h"
+#include "edf_hook.h"
 
 
 
@@ -44,8 +45,16 @@ static inline void start_thread(thread_t* thread)
     *(--sp) = MODE_SYS;                    // spsr_irq
     *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
 
-    // r0-r3, r12
+    // r0-r12 (full integer file; the IRQ handler saves/restores all of them)
     *(--sp) = 0; // r12
+    *(--sp) = 0; // r11
+    *(--sp) = 0; // r10
+    *(--sp) = 0; // r9
+    *(--sp) = 0; // r8
+    *(--sp) = 0; // r7
+    *(--sp) = 0; // r6
+    *(--sp) = 0; // r5
+    *(--sp) = 0; // r4
     *(--sp) = 0; // r3
     *(--sp) = 0; // r2
     *(--sp) = 0; // r1
@@ -171,6 +180,7 @@ inline void next_thread()
             : "=r"(curr_thread->sp)
         );
 
+        EDF_TICK_HOOK();
 
         while(incomingThreads->size > 0)
         {
@@ -269,7 +279,7 @@ inline void next_thread()
                     /* fall through */
 
                 case RUNNING:
-                    __asm__ __volatile__ ( 
+                    __asm__ __volatile__ (
                         "cps #0x1F\n"
                         "mov sp, %0\n"
                         "cps #0x13\n"

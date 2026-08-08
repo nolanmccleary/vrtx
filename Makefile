@@ -4,8 +4,9 @@ OBJCOPY := $(CROSS)-objcopy
 NM      := $(CROSS)-nm
 
 # Knobs (override on the command line, e.g. `make MODE=schedbench`).
-BOARD ?= de1-soc
-MODE  ?= demo               # demo | selftest | schedbench | stress
+BOARD      ?= de1-soc
+MODE       ?= demo          # demo | selftest | schedbench | stress | allocbench | edf
+U_PERMILLE ?= 900           # edf: target utilization x1000
 
 # Source groups.
 CORE := main.c \
@@ -30,6 +31,12 @@ else ifeq ($(MODE),schedbench)
 else ifeq ($(MODE),stress)
     CFLAGS += -DMODE_STRESS
     SRCS   := $(CORE) bench/workload_stress.c
+else ifeq ($(MODE),allocbench)
+    CFLAGS += -DMODE_ALLOCBENCH
+    SRCS   := $(CORE) bench/workload_allocbench.c $(INSTR)
+else ifeq ($(MODE),edf)
+    CFLAGS += -DMODE_EDF -DU_PERMILLE=$(U_PERMILLE)
+    SRCS   := $(CORE) bench/workload_edf.c $(INSTR)
 endif
 
 LIBGCC := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
