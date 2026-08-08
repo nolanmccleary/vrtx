@@ -8,10 +8,10 @@
  * other build; the core scheduler is unchanged. Mirrors the KTRACE_* injection.
  */
 #ifdef MODE_EDF
-void edf_tick_hook(void);      /* implemented in bench/workload_edf.c */
-#define EDF_TICK_HOOK() edf_tick_hook()
+void edf_tick_hook(void* running);    /* running = curr_thread; implemented in bench/workload_edf.c */
+#define EDF_TICK_HOOK(ct) edf_tick_hook(ct)
 #else
-#define EDF_TICK_HOOK() ((void)0)
+#define EDF_TICK_HOOK(ct) ((void)0)
 #endif
 
 #endif

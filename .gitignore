@@ -3,3 +3,6 @@ build/
 u-boot-socfpga/
 myenv/
 gmon.out
+
+# host-side benchmark artifacts (CSV + PNG per run)
+test_results/

@@ -180,8 +180,6 @@ inline void next_thread()
             : "=r"(curr_thread->sp)
         );
 
-        EDF_TICK_HOOK();
-
         while(incomingThreads->size > 0)
         {
             thread_t* thread;
@@ -294,6 +292,7 @@ inline void next_thread()
         }
 
         KTRACE_TICK_EXIT();
+        EDF_TICK_HOOK(curr_thread);   /* schedule trace + run-window snapshot (curr_thread = task this tick) */
     }
 }
 
