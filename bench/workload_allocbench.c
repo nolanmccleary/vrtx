@@ -27,7 +27,7 @@ static void* load[K];
 
 void allocbench_run(void)
 {
-    uint32_t ro, po;
+    uint32_t ro;
     void* p;
 
     pmu_init();
@@ -37,9 +37,8 @@ void allocbench_run(void)
     telemetry_metric_name(MALLOC_LOADED, "malloc_loaded");
     telemetry_metric_name(FREE_LOADED,   "free_loaded");
 
-    pmu_calibrate(&ro, &po);
-    g_telemetry.read_overhead_cyc  = ro;
-    g_telemetry.probe_overhead_cyc = po;
+    pmu_calibrate(&ro);
+    g_telemetry.read_overhead_cyc = ro;
 
     __asm__ __volatile__("cpsid if" ::: "memory");   /* isolate: no ticks during timing */
 

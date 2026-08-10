@@ -21,11 +21,10 @@
 void pmu_init(void);
 
 /*
- * Calibration: minimum back-to-back read cost (subtracted from every sample) and
- * the full empty-probe cost (informational). Best-case (min) is used so we remove
- * the pure read overhead, not a cache-cold outlier.
+ * Calibration: minimum back-to-back read cost, subtracted from every sample.
+ * Min (not mean) removes the pure read overhead rather than a cache-cold outlier.
  */
-void pmu_calibrate(uint32_t *read_overhead_cyc, uint32_t *probe_overhead_cyc);
+void pmu_calibrate(uint32_t *read_overhead_cyc);
 
 /*
  * Read the cycle counter. The ISB retires preceding instructions before the count

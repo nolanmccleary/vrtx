@@ -100,10 +100,9 @@ void edf_run(void)
     telemetry_metric_name(SM_SCHED_ALL, "sched_all");
     telemetry_metric_name(SM_DISPATCH,  "dispatch");
     telemetry_metric_name(SM_IDLE,      "idle");
-    uint32_t ro, po;
-    pmu_calibrate(&ro, &po);
-    g_telemetry.read_overhead_cyc  = ro;
-    g_telemetry.probe_overhead_cyc = po;
+    uint32_t ro;
+    pmu_calibrate(&ro);
+    g_telemetry.read_overhead_cyc = ro;
 
     /* cycles per tick: average over 16 ticks (interrupts on -> gTicks advances). */
     uint32_t t = rd_ticks();

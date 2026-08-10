@@ -27,26 +27,18 @@ void pmu_init(void)
 }
 
 
-void pmu_calibrate(uint32_t *read_overhead_cyc, uint32_t *probe_overhead_cyc)
+void pmu_calibrate(uint32_t *read_overhead_cyc)
 {
-    uint32_t best_read  = 0xFFFFFFFFu;
-    uint32_t best_probe = 0xFFFFFFFFu;
+    uint32_t best_read = 0xFFFFFFFFu;
 
-    /* Back-to-back read cost: the irreducible price of one measurement point. */
-    for (int i = 0; i < 64; i++) {
+    // Minimum cycles between two successive reads
+    for (int i = 0; i < 64; i++)
+    {
         uint32_t a = pmu_cycles();
         uint32_t b = pmu_cycles();
-        uint32_t d = b - a;
-        if (d < best_read) best_read = d;
+        uint32_t delta = b - a;
+        if (delta < best_read) best_read = delta;
     }
 
-    /* Empty-probe cost: begin + (nothing) + end, minus the read cost. */
-    for (int i = 0; i < 64; i++) {
-        uint32_t t0 = pmu_cycles();
-        uint32_t d  = pmu_cycles() - t0;
-        if (d < best_probe) best_probe = d;
-    }
-
-    *read_overhead_cyc  = best_read;
-    *probe_overhead_cyc = (best_probe > best_read) ? (best_probe - best_read) : 0;
+    *read_overhead_cyc = best_read;
 }

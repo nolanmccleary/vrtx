@@ -50,12 +50,6 @@ void bsp_gic_init(void)
 /////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
 
 
-void c_reset_handler(void)
-{
-    FLAG_WRITE(VECTOR_FLAG, 0x80);
-}
-
-
 void c_undef_handler(void)
 {
     FLAG_WRITE(VECTOR_FLAG, 0x04);
@@ -152,33 +146,6 @@ static void mmu_init(void)
         : "=&r"(r) : : "memory"
     );
 #endif
-}
-
-
-///////////////////////////////////////////// SDRAM TEST ////////////////////////////////
-#define SDRAM_BASE       ((volatile uint32_t *)0x00000000)
-#define SDRAM_TEST_WORDS 64
-
-void bsp_sdram_selftest(void)
-{
-    volatile uint32_t *p = SDRAM_BASE;
-
-    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++)
-        p[i] = i;
-
-    __asm__ volatile ("dsb" ::: "memory");
-    FLAG_WRITE(GENERAL_FLAG, 0xA002);
-
-    for (uint32_t i = 0; i < SDRAM_TEST_WORDS; i++) {
-        if (p[i] != i) {
-            FLAG_WRITE(SDRAM_TEST_RESULT, (uint32_t)&p[i]);
-            FLAG_WRITE(GENERAL_FLAG, 0x813);
-            return;
-        }
-    }
-
-    FLAG_WRITE(GENERAL_FLAG, 0x814);
-    FLAG_WRITE(SDRAM_TEST_RESULT, 0xDEAD0000);
 }
 
 

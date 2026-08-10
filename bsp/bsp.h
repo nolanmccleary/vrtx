@@ -10,6 +10,5 @@
 
 void bsp_gic_init(void);       /* enable GIC distributor + CPU interface, timer IRQ line */
 void bsp_timer_start(void);    /* configure + start the periodic tick (private/global timer) */
-void bsp_sdram_selftest(void); /* write/verify SDRAM; reports via the flag scoreboard */
 
 #endif

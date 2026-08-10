@@ -59,9 +59,9 @@ def symbol(name):
 
 
 # ------------------------------------------------------------ telemetry decode
-# telemetry_t header: 14 u32 fields, then metric_t metric[].
+# telemetry_t header: 13 u32 fields, then metric_t metric[].
 HEADER = ["magic", "version", "cpu_hz", "gtimer_hz", "cal_cycles", "cal_gtimer",
-          "read_ovf", "probe_ovf", "state", "bench_id", "n_metrics",
+          "read_ovf", "state", "bench_id", "n_metrics",
           "subbits", "maxpow", "nbuckets"]
 
 def read_telemetry(ocd, base):
@@ -72,9 +72,10 @@ def read_telemetry(ocd, base):
     nb = hdr["nbuckets"]
     hist_bytes   = (28 + 4 * nb + 7) & ~7          # count,sum,min,max,overflow,buckets[]
     metric_bytes = 16 + hist_bytes                 # name[16] + hist_t
+    hdr_bytes    = (len(HEADER) * 4 + 7) & ~7       # metric[] is 8-aligned (uint64 members)
     metrics = []
     for i in range(hdr["n_metrics"]):
-        w = ocd.read(base + len(HEADER) * 4 + i * metric_bytes, metric_bytes // 4)
+        w = ocd.read(base + hdr_bytes + i * metric_bytes, metric_bytes // 4)
         name = b"".join(x.to_bytes(4, "little") for x in w[0:4]).split(b"\x00")[0]
         metrics.append({
             "name":     name.decode(errors="replace"),
@@ -113,7 +114,7 @@ def percentile(m, subbits, p):
 # ------------------------------------------------------------------ reporting
 def report(hdr, metrics):
     print(f"\n=== telemetry (bench {hdr['bench_id']}, state {hdr['state']}, v{hdr['version']}) ===")
-    print(f"read_overhead={hdr['read_ovf']}c  probe_overhead={hdr['probe_ovf']}c")
+    print(f"read_overhead={hdr['read_ovf']}c")
     if hdr["cal_gtimer"]:
         print(f"cal ratio: {hdr['cal_cycles'] / hdr['cal_gtimer']:.3f} cycles/gtimer-tick")
     sb = hdr["subbits"]

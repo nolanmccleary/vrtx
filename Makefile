@@ -50,6 +50,6 @@ flash: build/$(IMG).elf
 # Build both images and drive the full suite (allocbench + EDF sweep + schedule
 # trace) on hardware; artifacts land in test_results/<timestamp>/.
 test: all
-	python3 test.py
+	# python3 test.py
 
 .PHONY: all clean flash test

@@ -21,7 +21,7 @@ OPENOCD_CFG  = "openocd/de1soc.cfg"
 STATUS_BASE  = 0xFFFF0000
 GENERAL_FLAG = 0xFFFF0018
 
-# telemetry_t layout (bench/telemetry.h): 14-word header, then metric_t[].
+# telemetry_t layout (bench/telemetry.h): 13-word header + 4 pad (metric_t is 8-aligned).
 TELEM_HDR   = 56
 HIST_NBUCK  = 16 * (20 - 4 + 1)
 _HIST_RAW   = 8 + 8 + 4 + 4 + 4 + HIST_NBUCK * 4
@@ -37,7 +37,7 @@ EDF_SECONDS  = 12
 ALLOC_SECONDS = 8
 
 
-def nm(elf):
+def elf_unpack(elf):
     out = subprocess.check_output(['arm-none-eabi-nm', elf]).decode()
     return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
 
@@ -122,7 +122,7 @@ def make(target, **vars):
 
 def run_alloc(ocd):
     make('build/allocbench.elf')
-    sy = nm('build/allocbench.elf')
+    sy = elf_unpack('build/allocbench.elf')
     ocd.run_image('build/allocbench.elf', sy['_reset_handler'], ALLOC_SECONDS)
     flag = ocd.mdw(GENERAL_FLAG)
     tel = sy['g_telemetry']
@@ -135,7 +135,7 @@ def run_alloc(ocd):
 def run_edf(ocd, u, want_trace=False):
     subprocess.run(['rm', '-f', 'build/edf.elf'], check=False)
     make('build/edf.elf', U_PERMILLE=u)
-    sy = nm('build/edf.elf')
+    sy = elf_unpack('build/edf.elf')
     ocd.run_image('build/edf.elf', sy['_reset_handler'], EDF_SECONDS)
     r = sy['g_edf_result']
     magic, state, _u, _nt, rt, miss, cyc = ocd.mdw(r, 7)
