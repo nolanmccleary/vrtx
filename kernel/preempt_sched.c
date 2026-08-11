@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "aux.h"
 #include "preempt_sched.h" 
-#include "allocator.h"
+#include "tlsf.h"
 #include "flags.h"
 #include "system.h"
 #include "thread.h"
@@ -148,6 +148,8 @@ void psched_deinit()
 
 
 
+thread_t* g_dbg_tasks[3];   /* DEBUG: task control blocks by period, for host JTAG inspection (probe.sh) */
+
 sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t period, thread_periodicity_e periodicity)
 {
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
@@ -156,6 +158,10 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t peri
 
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
+
+    if (period == 40)       g_dbg_tasks[0] = new_thread;   /* DEBUG capture */
+    else if (period == 60)  g_dbg_tasks[1] = new_thread;
+    else if (period == 100) g_dbg_tasks[2] = new_thread;
 
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
 

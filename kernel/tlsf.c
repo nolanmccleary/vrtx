@@ -1,11 +1,19 @@
 /* TLSF (Tender Loving Segmentation Fault) Allocator */
 
 
-#include <iterator>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "tlsf.h"
+
+
+
+void *memset(void *s, int c, size_t n)   // freestanding build has no libc; sequencer.c and struct inits need it
+{
+    unsigned char *p = s;
+    while (n--) *p++ = (unsigned char)c;
+    return s;
+}
 
 
 
@@ -17,7 +25,7 @@
 #define MIN_PAYLOAD 8     //Bytes needed to store prev and next pointers during free-space representation 
 
 
-#define INITIAL_FREE = ((1<<24) - 8) //Heap size minus the cost of one taken block header
+#define INITIAL_FREE ((1<<24) - 8) //Heap size minus the cost of one taken block header
 #define TLSF_SIZE ((FL_COUNT - (LIN - 1)) * SL_COUNT) //Linear zone until 2^7 hit
 
 
@@ -27,8 +35,10 @@ extern char _heap_end;
 
 
 
+#define ALIGN4(A) ((A + 0x3) & ~(0b11)) //round up to nearest word
+
 #define HEAP_START (ALIGN4(((uintptr_t)&_heap_start)))
-#define HEAP_END   ((uintptr_t)&_heap_end) & ~0b11
+#define HEAP_END   (((uintptr_t)&_heap_end) & ~0b11)
 #define HEAP_SIZE  (HEAP_END - HEAP_START)
 
 
@@ -88,13 +98,13 @@ static inline uint32_t leading_one(uint32_t n)
 
 
 //Given a size, this function returns the appropriate bin and sub_bin mappings
-static inline heap_op_e map_up(size_t size, uint32_t* bin_idx, uint32_t* sub_idx)
+static inline allocator_op_e map_up(size_t size, uint32_t* bin_idx, uint32_t* sub_idx)
 {
     if (size <= MIN_PAYLOAD) // [8,12) = tlsf[2]
     {
         *bin_idx = 6;
         *sub_idx = 2; 
-        return HEAP_OP_OK;
+        return ALLOC_OP_OK;
     }
 
     uint32_t leader = leading_one(size);
@@ -102,17 +112,16 @@ static inline heap_op_e map_up(size_t size, uint32_t* bin_idx, uint32_t* sub_idx
     {
         (void)bin_idx;
         (void)sub_idx;
-        return HEAP_OP_FAIL;
+        return ALLOC_OP_FAIL;
     }
 
     else if (leader < LIN)
     {
         leader = LIN-1;
-        size |= 1U << (LIN-1);
     }
 
     uint32_t lead_value = 1U << leader;
-    uint32_t excess = size & ~(lead_value); // Yet another GCC hint
+    uint32_t excess = (leader == LIN-1) ? size : (size & ~(lead_value)); // linear zone uses the whole size
 
     uint32_t sb_size;
 
@@ -137,14 +146,14 @@ static inline heap_op_e map_up(size_t size, uint32_t* bin_idx, uint32_t* sub_idx
     {
         (void)bin_idx;
         (void)sub_idx;
-        return HEAP_OP_FAIL;
+        return ALLOC_OP_FAIL;
     }
 
     else
     {
         *bin_idx = leader;
         *sub_idx = sb;
-        return HEAP_OP_OK;
+        return ALLOC_OP_OK;
     }
 }
 
@@ -156,7 +165,7 @@ static inline free_block_t* get_free(size_t size)
 
     uint32_t idx, sub_idx;
 
-    if (map_up(size, &idx, &sub_idx) == HEAP_OP_OK)
+    if (map_up(size, &idx, &sub_idx) == ALLOC_OP_OK)
     {
         uint32_t fShift = idx;
         uint32_t fCopy = fBitmap >> fShift;
@@ -196,12 +205,11 @@ static inline size_t map_down(size_t size, uint32_t* fBit, uint32_t* sBit, uint3
     if (leader < LIN)
     {
         leader = LIN-1;
-        size |= 1U << (LIN-1);
     }
 
 
     uint32_t lead_value = 1U << leader;
-    uint32_t excess = size & ~(lead_value); // Yet another GCC hint
+    uint32_t excess = (leader == LIN-1) ? size : (size & ~(lead_value)); // linear zone uses the whole size
 
     uint32_t sb_size;
 
@@ -223,31 +231,39 @@ static inline size_t map_down(size_t size, uint32_t* fBit, uint32_t* sBit, uint3
 
 void* kMalloc(size_t size)
 {
-    free_block_t* free_block = get_free(size);
+    free_block_t* free_block = get_free(size);   // size==0 -> NULL; sub-min handled by map_up's check chain
     if (free_block != NULL)
     {
-        size_t new_size = free_block->size.fields.size - size - sizeof(taken_block_t);
+        size_t orig_size = free_block->size.fields.size;
 
-        if (new_size >= MIN_PAYLOAD) // If we have enough for another block we split
+        uint32_t ofBit, osBit, osBitInd;                                 // free_block's own bin, for removal below
+        uint32_t obin = map_down(orig_size, &ofBit, &osBit, &osBitInd);
+
+        size_t new_size = orig_size - size - sizeof(taken_block_t);
+
+        if (orig_size >= size + sizeof(taken_block_t) + MIN_PAYLOAD) // If we have enough for another block we split
         {
             free_block_t* new_block = (free_block_t*)((char*)free_block + size + sizeof(taken_block_t));
             new_block->size.fields.size = new_size;
             new_block->size.fields.is_type_free_block = 1;
             new_block->prev_phys = free_block;
 
-            
+            free_block_t* after = (free_block_t*)((char*)new_block + new_size + sizeof(taken_block_t));
+            if ((uintptr_t)after < HEAP_END) after->prev_phys = new_block; // remainder is now the after-block's prev
+
+
             free_block->size.fields.size = size;
 
 
             uint32_t fBit, sBit, sBitInd;
-            uint32_t tlsf_idx = map_down(size, &fBit, &sBit, &sBitInd);
+            uint32_t tlsf_idx = map_down(new_size, &fBit, &sBit, &sBitInd);
 
             fBitmap |= fBit;
             sBitmap[sBitInd] |= sBit;
 
 
             free_block_t* head = tlsf_array[tlsf_idx];
-            
+
             new_block->prev = NULL;
             new_block->next = head;
             if (head != NULL) head->prev = new_block;
@@ -266,28 +282,39 @@ void* kMalloc(size_t size)
             prev->next = next;
         }
 
+        else
+        {
+            tlsf_array[obin] = next;    // free_block was the list head
+        }
+
         if (next != NULL)
         {
             next->prev = prev;
         }
 
+        if (tlsf_array[obin] == NULL) 
+        {
+            sBitmap[osBitInd] &= ~osBit;
+            if (sBitmap[osBitInd] == 0) fBitmap &= ~ofBit;
+        }
+
 
         return (void*)((char*)free_block + sizeof(taken_block_t));
     }
-    
+
     return NULL;
 }
 
 
 
 
-heap_op_e kFree(void* target)
+allocator_op_e kFree(void* target)
 {
-    if (target == NULL) return HEAP_OP_FAIL;
+    if (target == NULL) return ALLOC_OP_FAIL;
 
     taken_block_t* curr = (taken_block_t*)((char*)target - sizeof(taken_block_t));
 
-    if (curr->size.fields.is_type_free_block) return HEAP_OP_FAIL;
+    if (curr->size.fields.is_type_free_block) return ALLOC_OP_FAIL;
 
     size_t init_size = curr->size.fields.size;
     size_t new_free_size = init_size;
@@ -303,20 +330,26 @@ heap_op_e kFree(void* target)
         free_block_t* prev = prev_phys->prev;
         free_block_t* next = prev_phys->next;
 
+        uint32_t fBit, sBit, sBitInd;
+        uint32_t tlsf_idx = map_down(prevSize, &fBit, &sBit, &sBitInd);
+
         if (prev == NULL && next == NULL)
         {
-            uint32_t fBit, sBit, sBitInd;
-            uint32_t tlsf_idx = map_down(prevSize, &fBit, &sBit, &sBitInd);
             tlsf_array[tlsf_idx] = NULL;
-            fBitmap &= ~fBit;
             sBitmap[sBitInd] &= ~sBit;
+            if (sBitmap[sBitInd] == 0) fBitmap &= ~fBit;   // only clear octave bit once its last sub-bin empties
         }
 
-        else 
+        else
         {
             if (prev != NULL)
             {
                 prev->next = next;
+            }
+
+            else
+            {
+                tlsf_array[tlsf_idx] = next;    // prev_phys was the list head
             }
 
             if (next != NULL)
@@ -331,9 +364,9 @@ heap_op_e kFree(void* target)
     }
     
 
-    free_block_t* next_phys = (free_block_t*)((char*)target + init_size); 
+    free_block_t* next_phys = (free_block_t*)((char*)target + init_size);
 
-    while (next_phys < _heap_end && next_phys->size.fields.is_type_free_block)
+    while ((uintptr_t)next_phys < HEAP_END && next_phys->size.fields.is_type_free_block)
     {
         uint32_t nextSize = next_phys->size.fields.size;
         new_free_size += nextSize + sizeof(taken_block_t);
@@ -341,20 +374,26 @@ heap_op_e kFree(void* target)
         free_block_t* prev = next_phys->prev;
         free_block_t* next = next_phys->next;
 
+        uint32_t fBit, sBit, sBitInd;
+        uint32_t tlsf_idx = map_down(nextSize, &fBit, &sBit, &sBitInd);
+
         if (prev == NULL && next == NULL)
         {
-            uint32_t fBit, sBit, sBitInd;
-            uint32_t tlsf_idx = map_down(nextSize, &fBit, &sBit, &sBitInd);
             tlsf_array[tlsf_idx] = NULL;
-            fBitmap &= ~fBit;
             sBitmap[sBitInd] &= ~sBit;
+            if (sBitmap[sBitInd] == 0) fBitmap &= ~fBit;   // only clear octave bit once its last sub-bin empties
         }
 
-        else 
+        else
         {
             if (prev != NULL)
             {
                 prev->next = next;
+            }
+
+            else
+            {
+                tlsf_array[tlsf_idx] = next;    // next_phys was the list head
             }
 
             if (next != NULL)
@@ -363,13 +402,16 @@ heap_op_e kFree(void* target)
             }
         }
 
-        next_phys = (free_block_t*)((char*)next_phys + nextSize);
+        next_phys = (free_block_t*)((char*)next_phys + nextSize + sizeof(taken_block_t));
     }
 
 
     free_block_t* new_free = (free_block_t*)curr;
     new_free->size.fields.size = new_free_size;
     new_free->size.fields.is_type_free_block = 1;
+
+    free_block_t* after = (free_block_t*)((char*)new_free + new_free_size + sizeof(taken_block_t));
+    if ((uintptr_t)after < HEAP_END) after->prev_phys = new_free; // keep the after-block's boundary tag pointing at us
 
     uint32_t fBit, sBit, sBitInd;
     uint32_t tlsf_idx = map_down(new_free_size, &fBit, &sBit, &sBitInd);
@@ -384,18 +426,25 @@ heap_op_e kFree(void* target)
     if (head != NULL) head->prev = new_free;
 
     tlsf_array[tlsf_idx] = new_free;
+
+    return ALLOC_OP_OK;
 }
 
 
 
 
-heap_op_e heap_init(void)
+allocator_op_e heap_init(void)
 {
     for (size_t i = 0; i < TLSF_SIZE-1; i++)
     {
         tlsf_array[i] = NULL;
     }
-    
+
+    for (size_t i = 0; i < FL_COUNT - (LIN - 1); i++)   // clear every sub-bitmap so a re-init leaves no stale bits
+    {
+        sBitmap[i] = 0;
+    }
+
     free_block_t* sentinel = (free_block_t*)((void*)&_heap_start);
     sentinel->prev_phys = NULL;
     sentinel->prev = NULL;
@@ -403,18 +452,18 @@ heap_op_e heap_init(void)
     sentinel->size.fields.size = INITIAL_FREE;
     sentinel->size.fields.is_type_free_block = 1;
 
-    tlsf_array[TLSF_SIZE-1].head = sentinel;
+    tlsf_array[TLSF_SIZE-1] = sentinel;
 
     fBitmap = 1 << (FL_COUNT-1);
     sBitmap[FL_COUNT-LIN] = 1 << (SL_COUNT-1);
 
-    return HEAP_OP_OK;
+    return ALLOC_OP_OK;
 }
 
 
 
 
-heap_op_e heap_destroy(void)
+allocator_op_e heap_destroy(void)
 {
     size_t i;
 
@@ -430,5 +479,5 @@ heap_op_e heap_destroy(void)
         sBitmap[i] = 0;
     }
 
-    return HEAP_OP_OK;
+    return ALLOC_OP_OK;
 }

@@ -6,11 +6,19 @@ NM      := $(CROSS)-nm
 BOARD      ?= de1-soc
 U_PERMILLE ?= 900           # edf: target utilization x1000
 
+# Allocator: linear first-fit (default) or TLSF two-level segregated fit (make TLSF=1 ...).
+TLSF ?= 0
+ifeq ($(TLSF),1)
+    ALLOC_SRC := kernel/tlsf.c
+else
+    ALLOC_SRC := kernel/allocator.c
+endif
+
 # Shared sources: kernel + bsp + the instrumentation both benchmarks read (pmu, telemetry).
 CORE := main.c \
         bsp/startup.s bsp/bsp.c bsp/boot.c bsp/sequencer.c \
-        kernel/allocator.c kernel/preempt_sched.c kernel/deque.c kernel/min_heap.c \
-        bench/pmu.c bench/telemetry.c
+        $(ALLOC_SRC) kernel/preempt_sched.c kernel/deque.c kernel/min_heap.c \
+        bench/pmu.c bench/telemetry.c bench/qmeta.c
 
 CFLAGS := -mcpu=cortex-a9 -marm -O1 -g -ffreestanding -nostdlib -I. -Ibsp -Ikernel -Ibench
 # MMU + caches OFF by default: a deterministic, uncached baseline to benchmark against.
@@ -50,6 +58,6 @@ flash: build/$(IMG).elf
 # Build both images and drive the full suite (allocbench + EDF sweep + schedule
 # trace) on hardware; artifacts land in test_results/<timestamp>/.
 test: all
-	# python3 test.py
+	python3 test.py
 
 .PHONY: all clean flash test

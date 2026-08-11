@@ -3,7 +3,7 @@
 #include "boot.h"
 #include "sequencer.h"
 #include "flags.h"
-#include "allocator.h"       /* heap_init — brought up in c_startup */
+#include "tlsf.h"       /* HEAP_START/HEAP_END macros; heap_init() now runs in main() */
 #include "preempt_sched.h"   /* next_thread — the tick handler (direct call; see note) */
 
 #if ENABLE_DCACHE && !ENABLE_MMU
@@ -168,11 +168,11 @@ static void bsp_early_init(void)
 }
 
 
-/* Reset path lands here (startup.s: bl c_startup). Bring the platform to a usable
-   runtime — hardware + heap — then return so main() can dispatch the workload.
-   GIC/timer/scheduler are intentionally NOT started here; the workload owns those. */
+/* Reset path lands here (startup.s: bl c_startup). Bring the platform hardware to a
+   usable runtime, then return so main() can dispatch the workload. Heap init, GIC,
+   timer, and scheduler are intentionally NOT started here; main()/the workload own
+   those — in particular heap_init() runs in main() just before psched_init(). */
 void c_startup(void)
 {
     bsp_early_init();
-    heap_init();
 }

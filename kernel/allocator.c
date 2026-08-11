@@ -1,7 +1,19 @@
 #include <stddef.h>
-#include "allocator.h"
+#include <stdint.h>
+#include <stdbool.h>
+#include "tlsf.h"
 
 
+extern char _heap_start;
+extern char _heap_end;
+
+
+#define ALIGN4(A) ((A + 0x3) & ~(0b11)) //round up to nearest word
+
+
+#define HEAP_START (ALIGN4(((uintptr_t)&_heap_start)))
+#define HEAP_END   ((uintptr_t)&_heap_end) & ~0b11
+#define HEAP_SIZE  (HEAP_END - HEAP_START)
 
 void *memset(void *s, int c, size_t n)
 {
@@ -24,19 +36,22 @@ typedef struct heap_entry
 static heap_entry* _head = NULL;
 static bool heap_initialized = false;
 
-void heap_init(void)
+allocator_op_e heap_init(void)
 {
     _head = (heap_entry*)HEAP_START;
     _head->next = NULL;
     _head->is_free = true;
     _head->size = HEAP_SIZE - sizeof(heap_entry);
     heap_initialized = true;
+
+    return ALLOC_OP_OK;
 }
 
 
-void heap_deinit(void)
+allocator_op_e heap_deinit(void)
 {
     heap_initialized = false; 
+    return ALLOC_OP_OK;
 }
 
 
@@ -70,9 +85,9 @@ void* kMalloc(size_t size)
 }
 
 
-void kFree(void* target)
+allocator_op_e kFree(void* target)
 {
-    if(target == NULL) return;
+    if(target == NULL) return ALLOC_OP_FAIL;
 
     heap_entry* node = (heap_entry*)((char*)target - sizeof(heap_entry));    
     node->is_free = true;
@@ -87,4 +102,6 @@ void kFree(void* target)
         }
         else node = node->next;
     }
+
+    return ALLOC_OP_OK;
 }

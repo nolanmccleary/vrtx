@@ -3,9 +3,10 @@
 #include "telemetry.h"
 #include "ktrace.h"          /* SM_SCHED_ALL / SM_DISPATCH / SM_IDLE */
 #include "preempt_sched.h"
-#include "allocator.h"
+#include "tlsf.h"
 #include "thread.h"
 #include "flags.h"
+#include "qmeta.h"
 
 /*
  * EDF verification + scheduler-cost benchmark. A fixed periodic task set runs at a
@@ -62,6 +63,29 @@ typedef struct {
 } edf_result_t;
 
 edf_result_t g_edf_result;
+
+
+/* qmeta: describe this workload's result regions + the edf_result field layout so the
+   host locates them and decodes them straight from the .elf (no hardcoded offsets). */
+const qmeta_region_t g_qmeta_edf_regions[] QMETA_REGIONS = {
+    QMETA_REGION("g_edf_result",  &g_edf_result,  sizeof(g_edf_result),  QMETA_KIND_RESULT | QMETA_F_COHERENT),
+    QMETA_REGION("g_sched_trace", &g_sched_trace, sizeof(g_sched_trace), QMETA_KIND_GLOBAL | QMETA_F_COHERENT),
+    QMETA_REGION("g_trace_len",   &g_trace_len,   sizeof(g_trace_len),   QMETA_KIND_GLOBAL | QMETA_F_COHERENT),
+};
+
+const qmeta_field_t g_qmeta_edf_fields[] QMETA_FIELDS = {
+    QMETA_FIELD("edf_result", edf_result_t, magic),
+    QMETA_FIELD("edf_result", edf_result_t, state),
+    QMETA_FIELD("edf_result", edf_result_t, u_permille),
+    QMETA_FIELD("edf_result", edf_result_t, ntasks),
+    QMETA_FIELD("edf_result", edf_result_t, run_ticks),
+    QMETA_FIELD("edf_result", edf_result_t, misses),
+    QMETA_FIELD("edf_result", edf_result_t, cyc_per_tick),
+    QMETA_FIELD("edf_result", edf_result_t, C),
+    QMETA_FIELD("edf_result", edf_result_t, Tp),
+    QMETA_FIELD("edf_result", edf_result_t, done),
+    QMETA_FIELD("edf_result", edf_result_t, expected),
+};
 
 
 static inline uint32_t rd_ticks(void) { return *(volatile uint32_t*)&gTicks; }

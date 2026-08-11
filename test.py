@@ -7,10 +7,16 @@
                 record deadline misses + per-tick scheduler cost -> the U* knee
   - edf trace : a per-tick schedule trace at one representative U -> textbook Gantt
 
-Artifacts (CSV + PNG) land in test_results/<timestamp>/ (gitignored). Reads use
-`mdw phys`; with the MMU/caches off (the default build) that is always coherent.
+Artifacts (CSV + PNG) land in test_results/<timestamp>/ (gitignored).
+
+The image is self-describing: it emits a qmeta table (bench/qmeta.*) into .qmeta_*
+sections listing every region's addr/size/flags and every result struct's field
+offsets. We read that table STATICALLY out of the .elf (objcopy --dump-section), so
+nothing here hardcodes a symbol address or a struct field offset. Live values are
+then read over JTAG with `mdw phys` at the addresses the map hands back; the
+QMETA_F_COHERENT flag marks regions where that read is coherent (non-cacheable).
 """
-import subprocess, socket, time, re, os, sys, csv
+import subprocess, socket, time, re, os, sys, csv, struct, tempfile
 from datetime import datetime
 
 import matplotlib
@@ -40,6 +46,64 @@ ALLOC_SECONDS = 8
 def elf_unpack(elf):
     out = subprocess.check_output(['arm-none-eabi-nm', elf]).decode()
     return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
+
+
+QMETA_MAGIC = 0x514D4531        # "QME1"  (bench/qmeta.h)
+
+# region kinds / attribute flags (bench/qmeta.h)
+QMETA_F_COHERENT   = 0x100
+QMETA_F_STACK_DESC = 0x200
+
+
+class QMeta:
+    """The image's self-describing layout table, parsed statically from the .elf.
+
+    .regions[name] -> {addr, size, flags};  .fields[owner][name] -> (offset, size).
+    """
+    def __init__(self, elf):
+        hdr = self._dump(elf, 'qmeta_hdr')
+        if len(hdr) < 16:
+            raise RuntimeError(f"{elf}: no .qmeta table -- rebuild the image (bench/qmeta.c)")
+        magic, self.version, rstride, fstride = struct.unpack('<IIII', hdr[:16])
+        if magic != QMETA_MAGIC:
+            raise RuntimeError(f"{elf}: bad qmeta magic {magic:#010x}")
+
+        cstr = lambda b: b.split(b'\x00')[0].decode()
+        self.regions = {}
+        rd = self._dump(elf, 'qmeta_regions')
+        for i in range(0, len(rd) - rstride + 1, rstride):
+            name, addr, size, flags = struct.unpack('<16sIII', rd[i:i + 28])
+            self.regions[cstr(name)] = dict(addr=addr, size=size, flags=flags)
+
+        self.fields = {}
+        fd = self._dump(elf, 'qmeta_fields')
+        for i in range(0, len(fd) - fstride + 1, fstride):
+            owner, name, off, size = struct.unpack('<16s16sII', fd[i:i + 40])
+            self.fields.setdefault(cstr(owner), {})[cstr(name)] = (off, size)
+
+    @staticmethod
+    def _dump(elf, section):
+        fd, path = tempfile.mkstemp(suffix=f'.{section}.bin')
+        os.close(fd)
+        try:
+            subprocess.run(['arm-none-eabi-objcopy', '--dump-section', f'.{section}={path}', elf],
+                           stderr=subprocess.DEVNULL)
+            with open(path, 'rb') as f:
+                return f.read()
+        except OSError:
+            return b''
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+    def addr(self, name):
+        return self.regions[name]['addr']
+
+    def field_addr(self, region, owner, name):
+        """Absolute addr + word count of a result-struct field (base from region map,
+        offset from the field table) -- no hardcoded offsets on the host side."""
+        off, size = self.fields[owner][name]
+        return self.regions[region]['addr'] + off, max(1, size // 4)
 
 
 class OCD:
@@ -123,9 +187,10 @@ def make(target, **vars):
 def run_alloc(ocd):
     make('build/allocbench.elf')
     sy = elf_unpack('build/allocbench.elf')
+    qm = QMeta('build/allocbench.elf')
     ocd.run_image('build/allocbench.elf', sy['_reset_handler'], ALLOC_SECONDS)
     flag = ocd.mdw(GENERAL_FLAG)
-    tel = sy['g_telemetry']
+    tel = qm.addr('telemetry')
     metrics = {}
     for i, name in enumerate(('malloc', 'free', 'malloc_loaded', 'free_loaded')):
         metrics[name] = ocd.metric(tel, i)      # (count, mean, min, max)
@@ -136,13 +201,19 @@ def run_edf(ocd, u, want_trace=False):
     subprocess.run(['rm', '-f', 'build/edf.elf'], check=False)
     make('build/edf.elf', U_PERMILLE=u)
     sy = elf_unpack('build/edf.elf')
+    qm = QMeta('build/edf.elf')
     ocd.run_image('build/edf.elf', sy['_reset_handler'], EDF_SECONDS)
-    r = sy['g_edf_result']
-    magic, state, _u, _nt, rt, miss, cyc = ocd.mdw(r, 7)
-    C, Tp = ocd.mdw(r + 28, 3), ocd.mdw(r + 40, 3)
-    done, exp = ocd.mdw(r + 52, 3), ocd.mdw(r + 64, 3)
-    _, cmean, _, cmax = ocd.metric(sy['g_telemetry'], 0)
-    trace = ocd.read_bytes(sy['g_sched_trace'], TRACE_TICKS) if want_trace else None
+
+    # Every field located via the map: base = g_edf_result region addr, offset = field table.
+    scalar = lambda name: ocd.mdw(*qm.field_addr('g_edf_result', 'edf_result', name)[:1])
+    array  = lambda name: ocd.mdw(*qm.field_addr('g_edf_result', 'edf_result', name))
+    magic, state = scalar('magic'), scalar('state')
+    rt, miss, cyc = scalar('run_ticks'), scalar('misses'), scalar('cyc_per_tick')
+    C, Tp, done, exp = array('C'), array('Tp'), array('done'), array('expected')
+
+    _, cmean, _, cmax = ocd.metric(qm.addr('telemetry'), 0)
+    tr = qm.regions['g_sched_trace']
+    trace = ocd.read_bytes(tr['addr'], min(TRACE_TICKS, tr['size'])) if want_trace else None
     return dict(u=u, ok=(magic == 0x45444631 and state == 1),
                 actual_u=sum(c / t for c, t in zip(C, Tp)), misses=miss,
                 compl=100.0 * sum(done) / max(1, sum(exp)), cost_mean=cmean, cost_max=cmax,

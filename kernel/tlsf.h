@@ -7,16 +7,16 @@
 
 typedef enum 
 {
-    HEAP_OP_OK,
-    HEAP_OP_FAIL,
-}   heap_op_e;
+    ALLOC_OP_OK,
+    ALLOC_OP_FAIL,
+}   allocator_op_e;
 
 
 
 
-heap_op_e   heap_init(void);
-heap_op_e   heap_destroy(void);
+allocator_op_e   heap_init(void);
+allocator_op_e   heap_destroy(void);
 void*       kMalloc(size_t size);
-heap_op_e   kFree(void* target);
+allocator_op_e   kFree(void* target);
 
 #endif

@@ -56,12 +56,28 @@ SECTIONS {
         . = ALIGN(4);
     } > OCRAM
 
+    /* Self-describing layout metadata (bench/qmeta.*). LOADED so the host reads it
+       straight out of the .elf; contents are all link-time-constant addresses. */
+    .qmeta_hdr : {
+        . = ALIGN(4);
+        KEEP(*(.qmeta_hdr))
+    } > OCRAM
+    .qmeta_regions : {
+        . = ALIGN(4);
+        KEEP(*(.qmeta_regions))
+    } > OCRAM
+    .qmeta_fields : {
+        . = ALIGN(4);
+        KEEP(*(.qmeta_fields))
+    } > OCRAM
+
     .data : {
         _data_start = .;
         *(.data*)
         . = ALIGN(4);
         _data_end = .;
     } > OCRAM
+    _data_size = _data_end - _data_start;
 
     .bss : {
         _bss_start = .;
@@ -70,6 +86,7 @@ SECTIONS {
         . = ALIGN(4);
         _bss_end = .;
     } > OCRAM
+    _bss_size = _bss_end - _bss_start;
 
     /* Benchmark telemetry — NOLOAD results region, zeroed at runtime by
        telemetry_init(). Only present when a bench build pulls in telemetry.c. */
@@ -80,6 +97,7 @@ SECTIONS {
         . = ALIGN(8);
         _telemetry_end = .;
     } > OCRAM
+    _telemetry_size = _telemetry_end - _telemetry_start;
 
     /* OCRAM stacks — top-down: UND, ABT, FIQ, IRQ, SVC, SYS */
     _und_stack_top = ORIGIN(OCRAM) + LENGTH(OCRAM) - 4;

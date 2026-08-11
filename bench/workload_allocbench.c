@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include "pmu.h"
 #include "telemetry.h"
-#include "allocator.h"
+#include "tlsf.h"
 #include "flags.h"
 
 /*
