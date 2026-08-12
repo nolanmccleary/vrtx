@@ -36,6 +36,10 @@ EDF_SECONDS = 12.0
 EDF_TASKS = 3
 ALLOC_METRICS = 4
 
+GANTT_U = 700              # the one U trial whose schedule is traced (matches workload_edf.c)
+TRACE_TICKS = 1200         # g_sched_trace capacity (must match workload_edf.c)
+GANTT_WINDOW = 240         # ticks shown in the Gantt (readability)
+
 
 # =============================================================================
 # Target telemetry ABI
@@ -949,6 +953,63 @@ def plot_edf(
     plt.close(fig)
 
 
+def plot_gantt(
+    trace: Sequence[int],
+    periods: Sequence[int],
+    path: Path,
+    u_permille: int,
+    window: int = GANTT_WINDOW,
+) -> None:
+
+    n = min(len(trace), window)
+    nt = len(periods)
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+
+    fig, ax = plt.subplots(figsize=(12, 2.6))
+
+    for i in range(nt):
+        y = nt - 1 - i                                   # task 0 at top
+
+        segs, t = [], 0
+        while t < n:
+            if trace[t] == i:
+                s = t
+                while t < n and trace[t] == i:
+                    t += 1
+                segs.append((s, t - s))
+            else:
+                t += 1
+
+        ax.broken_barh(
+            segs,
+            (y + 0.15, 0.7),
+            facecolors=colors[i % len(colors)],
+        )
+
+        for k in range(0, n, periods[i]):                # release arrows (textbook up-arrow)
+            ax.annotate(
+                "",
+                xy=(k, y + 1.0),
+                xytext=(k, y + 0.12),
+                arrowprops=dict(arrowstyle="->", color="black", lw=0.7),
+            )
+
+    ax.set_yticks([nt - 1 - i + 0.5 for i in range(nt)])
+    ax.set_yticklabels([f"$\\tau_{i}$ (T={periods[i]})" for i in range(nt)])
+    ax.set_ylim(0, nt)
+    ax.set_xlim(0, n)
+    ax.set_xlabel("time (ticks)")
+    ax.set_title(
+        f"EDF schedule  (U={u_permille / 1000:.2f}, "
+        f"first {n} ticks; up-arrow = release)"
+    )
+    ax.grid(axis="x", alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -984,6 +1045,9 @@ def main() -> None:
             "g_edf_periods",
             "g_edf_C",
             "g_edf_done",
+
+            "g_sched_trace",
+            "g_trace_len",
 
             "g_test_release",
 
@@ -1141,6 +1205,9 @@ def main() -> None:
         print_edf_header()
 
 
+        gantt_trace: list[int] | None = None
+
+
         for (
             trial,
             expected_u,
@@ -1237,6 +1304,24 @@ def main() -> None:
 
 
             # -----------------------------------------------------------------
+            # Capture the schedule trace for the one representative trial.
+            # Target is halted, so the JTAG read is coherent.
+            # -----------------------------------------------------------------
+
+            if result.u_permille == GANTT_U:
+                trace_len = min(
+                    ocd.read_u32(symbols["g_trace_len"]),
+                    TRACE_TICKS,
+                )
+
+                if trace_len:
+                    gantt_trace = ocd.read_bytes(
+                        symbols["g_sched_trace"],
+                        trace_len,
+                    )
+
+
+            # -----------------------------------------------------------------
             # Release current trial.
             #
             # Target is halted, so JTAG RAM write is valid.
@@ -1312,6 +1397,15 @@ def main() -> None:
         edf_results,
         outdir / "edf_sweep.png",
     )
+
+
+    if gantt_trace is not None:
+        plot_gantt(
+            gantt_trace,
+            periods,
+            outdir / "edf_schedule.png",
+            GANTT_U,
+        )
 
 
     # =========================================================================

@@ -113,6 +113,7 @@ sys_exit_e psched_init()
 }
 
 
+//TODO: May want to make this only callable from main
 sys_exit_e psched_deinit()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
@@ -130,13 +131,6 @@ sys_exit_e psched_deinit()
         if (relHeap->heap[i].thread != NULL) kFree(relHeap->heap[i].thread);
     }
 
-    __asm__ __volatile__ ( 
-        "cps #0x1F\n"
-        "mov sp, %0\n"
-        "cps #0x13\n"
-        :
-        : "r"(main_thread->sp)
-    );
 
     kFree(main_thread);
 

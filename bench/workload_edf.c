@@ -10,6 +10,9 @@
 #define NTASKS       3u
 #define CALIB_ITERS  200000u
 
+#define TRACE_TICKS  1200u          /* per-tick schedule-trace window for the host Gantt */
+#define GANTT_U      700u           /* the one U trial whose schedule we trace */
+
 #define ARRAY_LEN(a) \
     (sizeof(a) / sizeof((a)[0]))
 
@@ -52,7 +55,14 @@ volatile uint32_t g_edf_C[NTASKS];
 volatile uint32_t g_edf_done[NTASKS];
 
 
+/* Per-tick schedule trace for the host Gantt: id of the task running each tick
+ * (0..2 = task index, 3 = idle). Filled only during the GANTT_U trial. */
+uint8_t  g_sched_trace[TRACE_TICKS];
+uint32_t g_trace_len;
+
 static uint32_t g_iters[NTASKS];
+
+static uint32_t g_trace_active;   /* 1 while the current trial is the one being traced */
 
 
 /* -------------------------------------------------------------------------
@@ -105,6 +115,31 @@ static sys_exit_e (*const JOBS[NTASKS])(void) =
     job1,
     job2
 };
+
+
+/* Identify the running thread by its job function; idle (main_thread) -> 3. */
+static int trace_idx(thread_t* r)
+{
+    if (r)
+    {
+        if (r->func == job0) return 0;
+        if (r->func == job1) return 1;
+        if (r->func == job2) return 2;
+    }
+
+    return 3;
+}
+
+
+/* Per-tick hook (invoked from the scheduler via KTRACE_TICK_EXIT). Records the
+ * running task id for the traced trial only; a no-op otherwise. */
+void ktrace_edf_tick(void* running)
+{
+    if (!g_trace_active)          return;
+    if (g_trace_len >= TRACE_TICKS) return;
+
+    g_sched_trace[g_trace_len++] = (uint8_t)trace_idx((thread_t*)running);
+}
 
 
 /* -------------------------------------------------------------------------
@@ -235,6 +270,10 @@ static void reset_trial(void)
 {
     gTicks = 0u;
     gMissedDeadlines = 0u;
+
+
+    g_trace_len    = 0u;
+    g_trace_active = (g_edf_u_permille == GANTT_U);
 
 
     for (uint32_t i = 0; i < NTASKS; i++)

@@ -22,14 +22,20 @@ typedef enum
 } sched_metrics_e;
 
 
+/* Per-tick schedule-trace hook, implemented in the EDF workload. Records which
+ * task ran this tick; a no-op outside the traced trial. */
+void ktrace_edf_tick(void* running);
+
+
 #define KTRACE_TICK_ENTER()          \
     uint32_t _kt = pmu_cycles();     \
-    int _kdisp = 0
+    int _kdisp = 0;                  \
+    void* _krun = 0
 
 
 #define KTRACE_SWITCH_IN(t)          \
     do {                             \
-        (void)(t);                   \
+        _krun  = (void*)(t);         \
         _kdisp = 1;                  \
     } while (0)
 
@@ -52,6 +58,8 @@ typedef enum
                 _kd                                                      \
             );                                                           \
         }                                                                \
+                                                                         \
+        ktrace_edf_tick(_krun);   /* outside the measured region above */\
     } while (0)
 
 
