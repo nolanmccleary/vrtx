@@ -20,10 +20,6 @@
 
 
 
-@; CERTIFIED OHIO STEPPER GANG GANG
-@; We want caches and branch prediction enabled. We don't want virtual memory enabled
-
-
 .global _vectors
 .global _reset_handler
 
@@ -132,7 +128,7 @@ set_loop:
     DSB
     ISB
 
-    @; MMU + cache init deferred to mmu_init() in main(), after SDRAM PHY is up.
+    @; MMU + cache init deferred to mmu_cache_init() in main(), after SDRAM PHY is up.
 
     msr CPSR_c, #(MODE_SYS)    @; no I_BIT, no F_BIT = both enabled
 

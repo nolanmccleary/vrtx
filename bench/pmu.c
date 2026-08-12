@@ -9,6 +9,9 @@
 #define PMCNTEN_CCNT (1u << 31)
 
 
+
+
+
 void pmu_init(void)
 {
     uint32_t v;
@@ -27,7 +30,7 @@ void pmu_init(void)
 }
 
 
-void pmu_calibrate(uint32_t *read_overhead_cyc)
+uint32_t pmu_calibrate(void)
 {
     uint32_t best_read = 0xFFFFFFFFu;
 
@@ -40,5 +43,5 @@ void pmu_calibrate(uint32_t *read_overhead_cyc)
         if (delta < best_read) best_read = delta;
     }
 
-    *read_overhead_cyc = best_read;
+    return best_read;
 }

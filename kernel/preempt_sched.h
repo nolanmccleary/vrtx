@@ -6,11 +6,15 @@
 #include "thread.h"
 
 
+extern uint32_t gTicks;
+extern uint32_t gMissedDeadlines;
 
-void psched_init(void);
-void psched_deinit(void);
-sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t period, thread_periodicity_e periodicity);
-extern void next_thread(void);
+
+sys_exit_e psched_init(void);
+sys_exit_e psched_deinit(void);
+sys_exit_e psched_clear_threads(void);
+sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity);
+void next_thread(void);
 
 
 

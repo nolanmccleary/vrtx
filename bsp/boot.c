@@ -4,7 +4,6 @@
 #include "pll_config.h"
 #include "sdram_config.h"
 #include "iocsr_config.h"
-#include "flags.h"
 
 /* ---- helpers ---- */
 

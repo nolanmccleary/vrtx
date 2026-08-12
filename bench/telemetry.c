@@ -1,60 +1,71 @@
+#include <stddef.h>
+#include <stdint.h>
+
 #include "telemetry.h"
 
+
 /*
- * Lives in a dedicated NOLOAD OCRAM section (see linker/de1-soc.ld). NOLOAD means
- * neither load_image nor the .bss zeroing loop touches it, so telemetry_init() is
- * responsible for zeroing it at runtime.
+ * Dedicated NOLOAD OCRAM region.
+ *
+ * load_image and BSS initialization do not initialize this memory.
+ * telemetry_init() owns initialization.
  */
-telemetry_t g_telemetry __attribute__((section(".telemetry"), used));
+telemetry_t g_telemetry
+    __attribute__((section(".telemetry"), used));
 
 
-static void zero(void *dst, uint32_t n)
+static void zero(void* dst, uint32_t n)
 {
-    volatile uint8_t *p = (volatile uint8_t *)dst;
-    while (n--) *p++ = 0;
+    volatile uint8_t* p = (volatile uint8_t*)dst;
+
+    while (n--)
+        *p++ = 0;
 }
 
 
-void hist_reset(hist_t *h)
+void metric_reset(metric_t* m)
 {
-    zero(h, sizeof(*h));
-    h->min = 0xFFFFFFFFu;
-    h->max = 0;
+    /*
+     * Do not clear m->name.
+     *
+     * Names identify metric slots across repeated EDF trials;
+     * only accumulated samples are reset.
+     */
+    m->count = 0;
+    m->sum   = 0;
+    m->min   = 0xFFFFFFFFu;
+    m->max   = 0;
 }
 
 
-void telemetry_init(uint32_t bench_id)
+void telemetry_init(void)
 {
     zero(&g_telemetry, sizeof(g_telemetry));
 
-    g_telemetry.magic               = TELEM_MAGIC;
-    g_telemetry.version             = TELEM_VERSION;
-    g_telemetry.cpu_hz              = 0;            /* pinned later; cycles are primary */
-    g_telemetry.gtimer_hz           = 0;
-    g_telemetry.state               = TELEM_INIT;
-    g_telemetry.bench_id            = bench_id;
-    g_telemetry.n_metrics           = TELEM_METRICS;
-    g_telemetry.hist_subbucket_bits = HIST_SUBBUCKET_BITS;
-    g_telemetry.hist_max_pow2       = HIST_MAX_POW2;
-    g_telemetry.hist_nbuckets       = HIST_NBUCKETS;
+    for (int i = 0; i < TELEM_METRICS; i++)
+        metric_reset(&g_telemetry.metric[i]);
 
-    for (int i = 0; i < TELEM_METRICS; i++) hist_reset(&g_telemetry.metric[i].h);
-
-    g_telemetry.state = TELEM_RUNNING;
+    g_telemetry.running = 1;
 }
 
 
-void telemetry_metric_name(int id, const char *name)
+void telemetry_name(int id, const char* name)
 {
-    if (id < 0 || id >= TELEM_METRICS) return;
-    char *dst = g_telemetry.metric[id].name;
-    int i = 0;
-    for (; i < 15 && name[i]; i++) dst[i] = name[i];
+    if (id < 0 || id >= TELEM_METRICS)
+        return;
+
+    char* dst = g_telemetry.metric[id].name;
+
+    size_t i;
+
+    for (i = 0; i < 15 && name[i]; i++)
+        dst[i] = name[i];
+
     dst[i] = '\0';
 }
 
 
 void telemetry_done(void)
 {
-    g_telemetry.state = TELEM_DONE;
+    g_telemetry.running = 0;
 }

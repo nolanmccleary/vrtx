@@ -2,9 +2,9 @@
 #include "bsp.h"
 #include "boot.h"
 #include "sequencer.h"
-#include "flags.h"
-#include "tlsf.h"       /* HEAP_START/HEAP_END macros; heap_init() now runs in main() */
-#include "preempt_sched.h"   /* next_thread — the tick handler (direct call; see note) */
+#include "tlsf.h"
+#include "preempt_sched.h"
+#include "ktrace.h"
 
 #if ENABLE_DCACHE && !ENABLE_MMU
 #error ENABLE_DCACHE requires ENABLE_MMU
@@ -26,25 +26,6 @@
 
 #define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
 
-
-void bsp_timer_start(void)
-{
-    GTIMER_CTRL    = 0;
-    GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 199999;
-    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
-    GTIMER_CMPH    = GTIMER_CNTRH;
-    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
-}
-
-
-void bsp_gic_init(void)
-{
-    GICD_CTLR       = 1;
-    GICD_ISENABLER0 |= (1 << 27);
-    GICC_PMR        = 0xFF;
-    GICC_CTLR       = 1;
-}
 
 
 /////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
@@ -83,9 +64,7 @@ void c_irq_handler(int id)
             WDT_L4 = 0x76;
             GTIMER_ISR = 1;
             FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
-            next_thread();   /* direct call; strong symbol when the scheduler is linked.
-                                Weak-symbol decoupling arrives with the first scheduler-
-                                less workload (Phase 3), keeping this hot path unchanged. */
+            next_thread(); 
             break;
 
         default:
@@ -103,7 +82,7 @@ void c_fiq_handler(int id)
 
 ///////////////////////////////////////////// MMU INIT /////////////////////////////
 
-static void mmu_init(void)
+static void mmu_cache_init(void)
 {
 #if ENABLE_MMU
     volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
@@ -151,6 +130,28 @@ static void mmu_init(void)
 
 ///////////////////////////////////////////// STARTUP /////////////////////////////
 
+
+void bsp_timer_start(void)
+{
+    GTIMER_CTRL    = 0;
+    GTIMER_ISR     = 1;
+    GTIMER_AUTOINC = 199999;
+    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
+    GTIMER_CMPH    = GTIMER_CNTRH;
+    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+}
+
+
+void bsp_gic_init(void)
+{
+    GICD_CTLR       = 1;
+    GICD_ISENABLER0 |= (1 << 27);
+    GICC_PMR        = 0xFF;
+    GICC_CTLR       = 1;
+}
+
+
+
 static void bsp_early_init(void)
 {
 #ifdef BOARD_DE1_SOC
@@ -163,16 +164,17 @@ static void bsp_early_init(void)
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
     NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
 #endif
-    mmu_init();
+    mmu_cache_init();
     FLAG_WRITE(GENERAL_FLAG, 0xBB01);
 }
 
 
-/* Reset path lands here (startup.s: bl c_startup). Bring the platform hardware to a
-   usable runtime, then return so main() can dispatch the workload. Heap init, GIC,
-   timer, and scheduler are intentionally NOT started here; main()/the workload own
-   those — in particular heap_init() runs in main() just before psched_init(). */
+
 void c_startup(void)
 {
     bsp_early_init();
+    bsp_gic_init();
+    bsp_timer_start();
+    heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
+    psched_init();
 }

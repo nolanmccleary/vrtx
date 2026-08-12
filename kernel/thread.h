@@ -21,8 +21,8 @@ typedef enum
 
 typedef enum
 {
-    PERIODIC,
     APERIODIC,
+    PERIODIC,
 }   thread_periodicity_e;
 
 
@@ -41,7 +41,7 @@ typedef struct
 
     char stack[THREAD_STACK_SIZE];
     char* sp;
-    sys_exit_e (*func)(thread_status_e* status);
+    sys_exit_e (*func)();
 }   thread_t;
 
 

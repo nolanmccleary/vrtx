@@ -25,7 +25,7 @@ void *memset(void *s, int c, size_t n)   // freestanding build has no libc; sequ
 #define MIN_PAYLOAD 8     //Bytes needed to store prev and next pointers during free-space representation 
 
 
-#define INITIAL_FREE ((1<<24) - 8) //Heap size minus the cost of one taken block header
+#define INITIAL_FREE (((1<<24) - 8) & ~(0b111)) //Heap size minus the cost of one taken block header
 #define TLSF_SIZE ((FL_COUNT - (LIN - 1)) * SL_COUNT) //Linear zone until 2^7 hit
 
 
@@ -35,13 +35,15 @@ extern char _heap_end;
 
 
 
-#define ALIGN4(A) ((A + 0x3) & ~(0b11)) //round up to nearest word
+#define ALIGN8(A) ((A + 0x7) & ~(0b111)) //LDRD/STRD on A9 require 8-byte alignment
 
-#define HEAP_START (ALIGN4(((uintptr_t)&_heap_start)))
+#define HEAP_START (ALIGN8(((uintptr_t)&_heap_start)))
 #define HEAP_END   (((uintptr_t)&_heap_end) & ~0b11)
 #define HEAP_SIZE  (HEAP_END - HEAP_START)
 
 
+
+static bool heap_initialized = false;
 
 
 
@@ -72,6 +74,17 @@ typedef struct
     void* prev_phys;
     tlsf_size_u size;
 }   taken_block_t;
+
+
+
+_Static_assert(sizeof(taken_block_t) == 8,                                "taken_block_t must be 8 bytes (no padding)");
+_Static_assert(sizeof(free_block_t)  == 16,                               "free_block_t must be 16 bytes (no padding)");
+_Static_assert(offsetof(free_block_t, prev_phys) == 0,                    "prev_phys must be at offset 0");
+_Static_assert(offsetof(free_block_t, size)      == 4,                    "size must be at offset 4");
+_Static_assert(offsetof(free_block_t, prev)      == 8,                    "prev must be at offset 8");
+_Static_assert(offsetof(free_block_t, next)      == 12,                   "next must be at offset 12");
+_Static_assert(offsetof(taken_block_t, prev_phys) == offsetof(free_block_t, prev_phys), "taken/free prev_phys must overlay");
+_Static_assert(offsetof(taken_block_t, size)      == offsetof(free_block_t, size),      "taken/free size must overlay");
 
 
 
@@ -231,6 +244,9 @@ static inline size_t map_down(size_t size, uint32_t* fBit, uint32_t* sBit, uint3
 
 void* kMalloc(size_t size)
 {
+    size = ALIGN8(size);
+
+
     free_block_t* free_block = get_free(size);   // size==0 -> NULL; sub-min handled by map_up's check chain
     if (free_block != NULL)
     {
@@ -435,29 +451,36 @@ allocator_op_e kFree(void* target)
 
 allocator_op_e heap_init(void)
 {
-    for (size_t i = 0; i < TLSF_SIZE-1; i++)
+    if (!heap_initialized)
     {
-        tlsf_array[i] = NULL;
+        for (size_t i = 0; i < TLSF_SIZE-1; i++)
+        {
+            tlsf_array[i] = NULL;
+        }
+
+        for (size_t i = 0; i < FL_COUNT - (LIN - 1); i++)   // clear every sub-bitmap so a re-init leaves no stale bits
+        {
+            sBitmap[i] = 0;
+        }
+
+        free_block_t* sentinel = (free_block_t*)((void*)&_heap_start);
+        sentinel->prev_phys = NULL;
+        sentinel->prev = NULL;
+        sentinel->next = NULL;
+        sentinel->size.fields.size = INITIAL_FREE;
+        sentinel->size.fields.is_type_free_block = 1;
+
+        tlsf_array[TLSF_SIZE-1] = sentinel;
+
+        fBitmap = 1 << (FL_COUNT-1);
+        sBitmap[FL_COUNT-LIN] = 1 << (SL_COUNT-1);
+
+        heap_initialized = true;
+        
+        return ALLOC_OP_OK;
     }
 
-    for (size_t i = 0; i < FL_COUNT - (LIN - 1); i++)   // clear every sub-bitmap so a re-init leaves no stale bits
-    {
-        sBitmap[i] = 0;
-    }
-
-    free_block_t* sentinel = (free_block_t*)((void*)&_heap_start);
-    sentinel->prev_phys = NULL;
-    sentinel->prev = NULL;
-    sentinel->next = NULL;
-    sentinel->size.fields.size = INITIAL_FREE;
-    sentinel->size.fields.is_type_free_block = 1;
-
-    tlsf_array[TLSF_SIZE-1] = sentinel;
-
-    fBitmap = 1 << (FL_COUNT-1);
-    sBitmap[FL_COUNT-LIN] = 1 << (SL_COUNT-1);
-
-    return ALLOC_OP_OK;
+    return ALLOC_OP_FAIL;
 }
 
 
@@ -465,19 +488,41 @@ allocator_op_e heap_init(void)
 
 allocator_op_e heap_destroy(void)
 {
-    size_t i;
-
-    for (i = 0; i < TLSF_SIZE; i++)
+    if (heap_initialized)
     {
-        tlsf_array[i] = NULL;
+        size_t i;
+
+        for (i = 0; i < TLSF_SIZE; i++)
+        {
+            tlsf_array[i] = NULL;
+        }
+
+        fBitmap = 0;
+        
+        for (i = 0; i < FL_COUNT - (LIN - 1); i++)
+        {
+            sBitmap[i] = 0;
+        }
+
+        heap_initialized = false;
+
+        return ALLOC_OP_OK;
     }
 
-    fBitmap = 0;
-    
-    for (i = 0; i < FL_COUNT - (LIN - 1); i++)
+    return ALLOC_OP_FAIL;
+}
+
+
+
+
+allocator_op_e heap_reset(void)
+{
+    if (heap_initialized)
     {
-        sBitmap[i] = 0;
+        heap_destroy();
+        heap_init();
+        return ALLOC_OP_OK;
     }
 
-    return ALLOC_OP_OK;
+    return ALLOC_OP_FAIL;
 }

@@ -3,13 +3,11 @@
 #include "aux.h"
 #include "preempt_sched.h" 
 #include "tlsf.h"
-#include "flags.h"
 #include "system.h"
 #include "thread.h"
 #include "min_heap.h"
 #include "deque.h"
 #include "ktrace.h"
-#include "edf_hook.h"
 
 
 
@@ -58,7 +56,7 @@ static inline void start_thread(thread_t* thread)
     *(--sp) = 0; // r3
     *(--sp) = 0; // r2
     *(--sp) = 0; // r1
-    *(--sp) = (uint32_t)&thread->thread_status; // r0
+    *(--sp) = 0; //(uint32_t)&thread->thread_status; // r0
 
     uint32_t adjustment = ((uint32_t)sp) & 4;
     sp = (uint32_t*)((uint32_t)sp - adjustment);
@@ -87,7 +85,7 @@ uint32_t gMissedDeadlines;
 
 
 
-void psched_init()
+sys_exit_e psched_init()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
@@ -110,10 +108,12 @@ void psched_init()
 
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
+
+    return SYS_OK;
 }
 
 
-void psched_deinit()
+sys_exit_e psched_deinit()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
@@ -144,13 +144,13 @@ void psched_deinit()
 
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
+
+    return SYS_OK;
 }
 
 
 
-thread_t* g_dbg_tasks[3];   /* DEBUG: task control blocks by period, for host JTAG inspection (probe.sh) */
-
-sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t period, thread_periodicity_e periodicity)
+sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity)
 {
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
     new_thread->period = period;
@@ -159,16 +159,50 @@ sys_exit_e add_thread(sys_exit_e (*func)(thread_status_e* status), uint32_t peri
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
 
-    if (period == 40)       g_dbg_tasks[0] = new_thread;   /* DEBUG capture */
-    else if (period == 60)  g_dbg_tasks[1] = new_thread;
-    else if (period == 100) g_dbg_tasks[2] = new_thread;
-
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
 
     return SYS_OK;
 }
 
 
+
+sys_exit_e psched_clear_threads(void)
+{
+    thread_t *thread;
+
+    while (incomingThreads->size > 0)
+    {
+        size_t size;
+        pop_front(incomingThreads, (char**)&thread, &size);
+        if (thread != NULL) 
+            kFree(thread);
+    }
+
+    while (deadHeap->curr_index > 0)
+    {
+        pop_heap(deadHeap, &thread);
+        if (thread != NULL) 
+            kFree(thread);
+    }
+
+    while (relHeap->curr_index > 0)
+    {
+        pop_heap(relHeap, &thread);
+        if (thread != NULL)
+            kFree(thread);
+    }
+
+    curr_thread = main_thread;
+
+    return SYS_OK;
+}
+
+
+
+
+
+
+//TODO: Add thread id's and functionality to remove individual threads
 
 inline void next_thread()
 {
@@ -185,6 +219,38 @@ inline void next_thread()
             "cps #0x13\n"
             : "=r"(curr_thread->sp)
         );
+
+
+
+
+
+#ifdef MODE_TEST
+        /*
+        * Python finished sampling the current EDF trial.
+        *
+        * At overload, EDF may otherwise starve main forever.
+        * Force main in once so KTRACE_WAIT_RELEASE() can observe
+        * g_test_release and return.
+        */
+        if (KTRACE_RELEASE_PENDING())
+        {
+            curr_thread = main_thread;
+
+            __asm__ __volatile__ (
+                "cps #0x1F\n"
+                "mov sp, %0\n"
+                "cps #0x13\n"
+                :
+                : "r"(main_thread->sp)
+                : "memory"
+            );
+
+            KTRACE_TICK_EXIT();
+
+            return;
+        }
+#endif
+
 
         while(incomingThreads->size > 0)
         {
@@ -298,7 +364,6 @@ inline void next_thread()
         }
 
         KTRACE_TICK_EXIT();
-        EDF_TICK_HOOK(curr_thread);   /* schedule trace + run-window snapshot (curr_thread = task this tick) */
     }
 }
 
