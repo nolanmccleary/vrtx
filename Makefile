@@ -38,7 +38,6 @@ CORE := \
 	bench/ktrace.c \
 	bench/pmu.c \
 	bench/telemetry.c \
-	bench/qmeta.c \
 	bench/workload_edf.c \
 	bench/workload_allocbench.c
 
@@ -114,6 +113,9 @@ flash: build/$(IMG).elf
 
 test: build/test.elf
 	python3 test.py
+
+
+all: build/test.elf
 
 
 clean:

@@ -1338,21 +1338,7 @@ def main() -> None:
 
             
             ocd.halt()
-            print(
-                f"\nMEASURE HALT: "
-                f"pc=0x{ocd.pc():08x}, "
-                f"ticks={ocd.read_u32(symbols['gTicks'])}"
-            )
             probe_pc = ocd.pc()
-
-
-            print(
-                "\nPOST RELEASE:",
-                f"pc=0x{probe_pc:08x}",
-                f"release={ocd.read_u32(symbols['g_test_release'])}",
-                f"u_index={ocd.read_u32(symbols['g_edf_u_index'])}",
-                f"ticks={ocd.read_u32(symbols['gTicks'])}",
-            )
 
             if probe_pc != bp_edf_ready:
                 ocd.resume()

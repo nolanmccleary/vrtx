@@ -49,7 +49,7 @@ void c_prefetch_handler(void)
 }
 
 
-void c_data_handler(void)
+void c_abort_handler(void)
 {
     FLAG_WRITE(VECTOR_FLAG, 0x10);
 }
@@ -61,7 +61,7 @@ void c_irq_handler(int id)
     switch(id)
     {
         case 0x1b:
-            WDT_L4 = 0x76;
+            WDT_L4 = 0x76; //Feed WDT
             GTIMER_ISR = 1;
             FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
             next_thread(); 
@@ -162,7 +162,7 @@ static void bsp_early_init(void)
     FLAG_WRITE(SDRAM_TEST_RESULT, cal);
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
-    NIC301_REMAP       = 0;            /* SDRAM at 0x0 on L3 NIC path too */
+    NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now 
 #endif
     mmu_cache_init();
     FLAG_WRITE(GENERAL_FLAG, 0xBB01);

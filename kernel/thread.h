@@ -28,8 +28,11 @@ typedef enum
 
 
 
-typedef struct
+typedef struct __attribute__((aligned(8))) //Stack should start 8-aligned
 {
+    char stack[THREAD_STACK_SIZE];
+    char* sp;
+
     thread_periodicity_e periodicity;
     uint32_t period;
 
@@ -39,8 +42,6 @@ typedef struct
     bool dirty;
     thread_status_e thread_status;
 
-    char stack[THREAD_STACK_SIZE];
-    char* sp;
     sys_exit_e (*func)();
 }   thread_t;
 

@@ -29,7 +29,7 @@ _vectors:
     B _undef_handler
     B _swi_handler
     B _prefetch_handler
-    B _data_handler
+    B _abort_handler
     NOP               @; Reserved vector
     B _irq_handler
     B _fiq_handler
@@ -151,7 +151,7 @@ _identify_and_clear_source:
     ldr     r1, [r0]            @; acknowledge + get ID
     ldr     r0, =GICC_EOIR
     str     r1, [r0]            @; EOI
-    mov     r0, r1              @; return ID in r0, same value as in iar because its the same interrupt
+    mov     r0, r1              @; arm calling convention returns value in r0; we want to return interrupt ID
     BX      lr
 
 
@@ -168,8 +168,8 @@ _prefetch_handler:
     BL c_prefetch_handler
     b .
 
-_data_handler:
-    BL c_data_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
+_abort_handler:
+    BL c_abort_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
     b . @; For now just halt
 
 

@@ -3,6 +3,7 @@
 #include "ktrace.h"
 #include "pmu.h"
 #include "telemetry.h"
+#include "thread.h"
 #include "tlsf.h"
 
 
@@ -53,8 +54,7 @@ void allocbench_run(void)
     );
 
 
-    g_telemetry.read_overhead =
-        pmu_calibrate();
+    g_telemetry.read_overhead = pmu_calibrate();
 
 
     /*
@@ -135,8 +135,6 @@ void allocbench_run(void)
 
 
     heap_destroy();
-
-
     telemetry_done();
 
 

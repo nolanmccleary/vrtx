@@ -15,22 +15,19 @@
 typedef struct
 {
     char name[16];
-
     uint64_t count;
     uint64_t sum;
-
     uint32_t min;
     uint32_t max;
-} metric_t;
+}   metric_t;
 
 
 typedef struct
 {
     uint32_t running;
     uint32_t read_overhead;
-
     metric_t metric[TELEM_METRICS];
-} telemetry_t;
+}   telemetry_t;
 
 
 _Static_assert(sizeof(metric_t) == 40u, "metric_t layout changed");
@@ -47,7 +44,7 @@ void telemetry_done(void);
 void metric_reset(metric_t* m);
 
 
-static inline void metric_record(metric_t* m, uint32_t cycles)
+static inline void metric_update(metric_t* m, uint32_t cycles)
 {
     m->count++;
     m->sum += cycles;
@@ -75,7 +72,7 @@ static inline uint32_t telem_correct(uint32_t delta)
 
 
 #define MEASURE_END(id)                                            \
-    metric_record(                                                 \
+    metric_update(                                                 \
         &g_telemetry.metric[id],                                   \
         telem_correct(pmu_cycles() - _mt_##id)                     \
     )

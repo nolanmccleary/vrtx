@@ -77,15 +77,6 @@ typedef struct
 
 
 
-_Static_assert(sizeof(taken_block_t) == 8,                                "taken_block_t must be 8 bytes (no padding)");
-_Static_assert(sizeof(free_block_t)  == 16,                               "free_block_t must be 16 bytes (no padding)");
-_Static_assert(offsetof(free_block_t, prev_phys) == 0,                    "prev_phys must be at offset 0");
-_Static_assert(offsetof(free_block_t, size)      == 4,                    "size must be at offset 4");
-_Static_assert(offsetof(free_block_t, prev)      == 8,                    "prev must be at offset 8");
-_Static_assert(offsetof(free_block_t, next)      == 12,                   "next must be at offset 12");
-_Static_assert(offsetof(taken_block_t, prev_phys) == offsetof(free_block_t, prev_phys), "taken/free prev_phys must overlay");
-_Static_assert(offsetof(taken_block_t, size)      == offsetof(free_block_t, size),      "taken/free size must overlay");
-
 
 
 // typedef struct

@@ -4,8 +4,8 @@
 #include "pmu.h"
 #include "preempt_sched.h"
 #include "telemetry.h"
+#include "thread.h"
 #include "tlsf.h"
-
 
 #define NTASKS       3u
 #define CALIB_ITERS  200000u
@@ -36,8 +36,7 @@ const uint32_t g_edf_u_values[] =
 };
 
 
-const uint32_t g_edf_u_count =
-    ARRAY_LEN(g_edf_u_values);
+const uint32_t g_edf_u_count = ARRAY_LEN(g_edf_u_values);
 
 
 const uint32_t g_edf_periods[NTASKS] =
@@ -50,38 +49,35 @@ const uint32_t g_edf_periods[NTASKS] =
 
 volatile uint32_t g_edf_u_index;
 volatile uint32_t g_edf_u_permille;
-
 volatile uint32_t g_edf_C[NTASKS];
 volatile uint32_t g_edf_done[NTASKS];
+volatile uint8_t  g_sched_trace[TRACE_TICKS];
+volatile uint32_t g_trace_len;
 
 
-/* Per-tick schedule trace for the host Gantt: id of the task running each tick
- * (0..2 = task index, 3 = idle). Filled only during the GANTT_U trial. */
-uint8_t  g_sched_trace[TRACE_TICKS];
-uint32_t g_trace_len;
+static uint32_t trace_active;   /* 1 while the current trial is the one being traced */
+static uint32_t iters[NTASKS];
 
-static uint32_t g_iters[NTASKS];
-
-static uint32_t g_trace_active;   /* 1 while the current trial is the one being traced */
 
 
 /* -------------------------------------------------------------------------
  * Synthetic jobs
  * ------------------------------------------------------------------------- */
 
+static uint32_t dummy = 0;
 __attribute__((noinline, noclone))
 static void do_work(uint32_t iters)
 {
     for (uint32_t i = 0; i < iters; i++)
     {
-        __asm__ __volatile__("");
+        dummy++;
     }
 }
 
 
 static sys_exit_e job0(void)
 {
-    do_work(g_iters[0]);
+    do_work(iters[0]);
 
     g_edf_done[0]++;
 
@@ -91,7 +87,7 @@ static sys_exit_e job0(void)
 
 static sys_exit_e job1(void)
 {
-    do_work(g_iters[1]);
+    do_work(iters[1]);
 
     g_edf_done[1]++;
 
@@ -101,7 +97,7 @@ static sys_exit_e job1(void)
 
 static sys_exit_e job2(void)
 {
-    do_work(g_iters[2]);
+    do_work(iters[2]);
 
     g_edf_done[2]++;
 
@@ -133,12 +129,12 @@ static int trace_idx(thread_t* r)
 
 /* Per-tick hook (invoked from the scheduler via KTRACE_TICK_EXIT). Records the
  * running task id for the traced trial only; a no-op otherwise. */
-void ktrace_edf_tick(void* running)
+void ktrace_edf_tick(thread_t* running)
 {
-    if (!g_trace_active)          return;
+    if (!trace_active)            return;
     if (g_trace_len >= TRACE_TICKS) return;
 
-    g_sched_trace[g_trace_len++] = (uint8_t)trace_idx((thread_t*)running);
+    g_sched_trace[g_trace_len++] = (uint8_t)trace_idx(running);
 }
 
 
@@ -146,44 +142,36 @@ void ktrace_edf_tick(void* running)
  * Calibration
  * ------------------------------------------------------------------------- */
 
+//TODO: Implement mechanism to read kernel objects safely
+// returns current gTicks value
 static inline uint32_t rd_ticks(void)
 {
     return *(volatile uint32_t*)&gTicks;
 }
 
 
+//Calculates avg number of cycles per tick
 static uint32_t measure_cycles_per_tick(void)
 {
     uint32_t tick = rd_ticks();
 
-
     /*
      * Synchronize to a tick edge.
      */
-    while (rd_ticks() == tick)
-    {
-    }
+    while (rd_ticks() == tick){}
 
-
-    uint32_t start =
-        pmu_cycles();
-
-
+    uint32_t start = pmu_cycles();
     tick = rd_ticks();
 
 
-    while (rd_ticks() < tick + 16u)
-    {
-    }
+    while (rd_ticks() < tick + 16u){} //16 tick averaging window
 
-
-    return (
-        pmu_cycles() - start
-    ) / 16u;
+    return (pmu_cycles() - start) / 16u;
 }
 
 
-static uint32_t calibrate_work(void)
+//Runs the calibration burst and returns cycles per do_work iteration (>= 1)
+static uint32_t measure_cycles_per_iter(void)
 {
     __asm__ __volatile__(
         "cpsid i"
@@ -193,17 +181,11 @@ static uint32_t calibrate_work(void)
     );
 
 
-    uint32_t start =
-        pmu_cycles();
+    uint32_t start = pmu_cycles();
 
+    do_work(CALIB_ITERS);
 
-    do_work(
-        CALIB_ITERS
-    );
-
-
-    uint32_t cycles =
-        pmu_cycles() - start;
+    uint32_t cycles = pmu_cycles() - start;
 
 
     __asm__ __volatile__(
@@ -214,7 +196,7 @@ static uint32_t calibrate_work(void)
     );
 
 
-    return cycles;
+    return cycles / CALIB_ITERS;   // cycles-per-iter: reciprocal is < 1 and would truncate to 0
 }
 
 
@@ -222,46 +204,16 @@ static uint32_t calibrate_work(void)
  * Trial setup
  * ------------------------------------------------------------------------- */
 
-static void configure_work(
-    uint32_t u_permille,
-    uint32_t cycles_per_tick,
-    uint32_t calibration_cycles
-)
+static void configure_work(uint32_t u_permille, uint32_t cycles_per_tick, uint32_t cycles_per_iter)
 {
     for (uint32_t i = 0; i < NTASKS; i++)
     {
-        uint32_t Ci =
-            (
-                u_permille *
-                g_edf_periods[i]
-            )
-            /
-            (
-                1000u *
-                NTASKS
-            );
+        uint32_t Ci_ticks =(u_permille * g_edf_periods[i]) / (1000u * NTASKS);
 
+        if (Ci_ticks < 1u) Ci_ticks = 1u;
 
-        if (Ci < 1u)
-        {
-            Ci = 1u;
-        }
-
-
-        g_edf_C[i] =
-            Ci;
-
-
-        g_iters[i] =
-            (uint32_t)(
-                (
-                    (uint64_t)Ci *
-                    cycles_per_tick *
-                    CALIB_ITERS
-                )
-                /
-                calibration_cycles
-            );
+        g_edf_C[i] = Ci_ticks;
+        iters[i] = (uint32_t)((uint64_t)Ci_ticks * cycles_per_tick / cycles_per_iter);
     }
 }
 
@@ -273,7 +225,7 @@ static void reset_trial(void)
 
 
     g_trace_len    = 0u;
-    g_trace_active = (g_edf_u_permille == GANTT_U);
+    trace_active = (g_edf_u_permille == GANTT_U);
 
 
     for (uint32_t i = 0; i < NTASKS; i++)
@@ -303,8 +255,6 @@ static void reset_trial(void)
 void edf_run(void)
 {
     pmu_init();
-
-
     telemetry_init();
 
     telemetry_name(
@@ -323,32 +273,20 @@ void edf_run(void)
     );
 
 
-    g_telemetry.read_overhead =
-        pmu_calibrate();
-
+    g_telemetry.read_overhead = pmu_calibrate();
 
     /*
      * allocbench destroyed its heap before returning.
      */
     heap_init();
-
-
     psched_init();
 
 
-    uint32_t cycles_per_tick =
-        measure_cycles_per_tick();
+    uint32_t cycles_per_tick = measure_cycles_per_tick();
+    uint32_t cycles_per_iter = measure_cycles_per_iter();
 
 
-    uint32_t calibration_cycles =
-        calibrate_work();
-
-
-    for (
-        uint32_t trial = 0;
-        trial < g_edf_u_count;
-        trial++
-    )
+    for (uint32_t trial = 0; trial < g_edf_u_count; trial++)
     {
         /*
          * Trial construction must not race the scheduler.
@@ -360,13 +298,8 @@ void edf_run(void)
             : "memory"
         );
 
-
-        g_edf_u_index =
-            trial;
-
-
-        g_edf_u_permille =
-            g_edf_u_values[trial];
+        g_edf_u_index = trial;
+        g_edf_u_permille = g_edf_u_values[trial];
 
 
         reset_trial();
@@ -375,12 +308,11 @@ void edf_run(void)
         configure_work(
             g_edf_u_permille,
             cycles_per_tick,
-            calibration_cycles
+            cycles_per_iter
         );
 
 
-        g_test_release =
-            0u;
+        g_test_release = 0u;
 
 
         for (uint32_t i = 0; i < NTASKS; i++)
@@ -401,20 +333,19 @@ void edf_run(void)
         );
 
 
-        __asm__ __volatile__(
-            "cpsie i"
-            :
-            :
-            : "memory"
-        );
-
-
         /*
          * Python has a hardware breakpoint installed here.
          *
          * Reaching it means this trial is fully configured.
          */
         KTRACE_EDF_READY();
+
+        __asm__ __volatile__(
+            "cpsie i"
+            :
+            :
+            : "memory"
+        );
 
 
         /*
@@ -456,12 +387,7 @@ void edf_run(void)
 
 
     telemetry_done();
-
-
-    psched_deinit();
-
-
-    heap_destroy();
+    heap_reset();
 
 
     /*

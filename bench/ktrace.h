@@ -8,6 +8,7 @@
 
 #include "pmu.h"
 #include "telemetry.h"
+#include "thread.h"
 
 
 /* -------------------------------------------------------------------------
@@ -24,7 +25,7 @@ typedef enum
 
 /* Per-tick schedule-trace hook, implemented in the EDF workload. Records which
  * task ran this tick; a no-op outside the traced trial. */
-void ktrace_edf_tick(void* running);
+void ktrace_edf_tick(thread_t* running);
 
 
 #define KTRACE_TICK_ENTER()          \
@@ -35,7 +36,7 @@ void ktrace_edf_tick(void* running);
 
 #define KTRACE_SWITCH_IN(t)          \
     do {                             \
-        _krun  = (void*)(t);         \
+        _krun  = (thread_t*)(t);         \
         _kdisp = 1;                  \
     } while (0)
 
@@ -46,12 +47,12 @@ void ktrace_edf_tick(void* running);
                                                                          \
         if (g_telemetry.running)                                         \
         {                                                                \
-            metric_record(                                               \
+            metric_update(                                               \
                 &g_telemetry.metric[SM_SCHED_ALL],                       \
                 _kd                                                      \
             );                                                           \
                                                                          \
-            metric_record(                                               \
+            metric_update(                                               \
                 &g_telemetry.metric[                                     \
                     _kdisp ? SM_DISPATCH : SM_IDLE                       \
                 ],                                                       \

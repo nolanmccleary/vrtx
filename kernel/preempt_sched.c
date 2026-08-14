@@ -215,9 +215,6 @@ inline void next_thread()
         );
 
 
-
-
-
 #ifdef MODE_TEST
         /*
         * Python finished sampling the current EDF trial.
