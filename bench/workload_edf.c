@@ -49,12 +49,12 @@ const uint32_t g_edf_periods[NTASKS] =
 
 volatile uint32_t g_edf_u_index;
 volatile uint32_t g_edf_u_permille;
+
 volatile uint32_t g_edf_C[NTASKS];
 volatile uint32_t g_edf_done[NTASKS];
+
 volatile uint8_t  g_sched_trace[TRACE_TICKS];
 volatile uint32_t g_trace_len;
-
-
 static uint32_t trace_active;   /* 1 while the current trial is the one being traced */
 static uint32_t iters[NTASKS];
 

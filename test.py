@@ -72,11 +72,11 @@ METRIC_SIZE = METRIC_STRUCT.size
 
 @dataclass(frozen=True)
 class Metric:
-    name: str
-    count: int
-    total: int
-    minimum: int
-    maximum: int
+    name: str        # metric_t, telemetry_t g_telemetry
+    count: int       # metric_t, telemetry_t g_telemetry
+    total: int       # metric_t, telemetry_t g_telemetry
+    minimum: int     # metric_t, telemetry_t g_telemetry
+    maximum: int     # metric_t, telemetry_t g_telemetry
 
     @property
     def mean(self) -> int:
@@ -85,19 +85,19 @@ class Metric:
 
 @dataclass(frozen=True)
 class EDFResult:
-    index: int
-    u_permille: int
+    index: int                  # g_edf_u_index
+    u_permille: int             # g_edf_u_permille
 
-    ticks: int
-    misses: int
+    ticks: int                  # gTicks
+    misses: int                 # gMissedDeadlines
 
-    c: tuple[int, ...]
-    periods: tuple[int, ...]
+    c: tuple[int, ...]          # g_edf_C
+    periods: tuple[int, ...]    # g_edf_periods
 
-    done: tuple[int, ...]
-    expected: tuple[int, ...]
+    done: tuple[int, ...]       # g_edf_done
+    expected: tuple[int, ...]   # gTicks, g_edf_periods
 
-    sched: Metric
+    sched: Metric               # telemetry_t g_telemetry, metric_t
 
     @property
     def requested_u(self) -> float:
@@ -110,14 +110,6 @@ class EDFResult:
             for c, period in zip(self.c, self.periods)
         )
 
-    @property
-    def completion(self) -> float:
-        total_expected = sum(self.expected)
-
-        if total_expected == 0:
-            return 0.0
-
-        return 100.0 * sum(self.done) / total_expected
 
 
 # =============================================================================
@@ -661,7 +653,6 @@ def print_edf_header() -> None:
         f"{'actU':>6} "
         f"{'ticks':>8} "
         f"{'miss':>8} "
-        f"{'compl%':>8} "
         f"{'cost':>8} "
         f"{'max':>8}"
     )
@@ -676,7 +667,6 @@ def print_edf_result(
         f"{result.actual_u:>6.3f} "
         f"{result.ticks:>8} "
         f"{result.misses:>8} "
-        f"{result.completion:>8.1f} "
         f"{result.sched.mean:>8} "
         f"{result.sched.maximum:>8}"
     )
@@ -740,7 +730,6 @@ def write_edf_csv(
 
                 "ticks",
                 "misses",
-                "completion_pct",
 
                 "sched_count",
                 "sched_mean_cyc",
@@ -777,10 +766,6 @@ def write_edf_csv(
 
                     result.ticks,
                     result.misses,
-                    round(
-                        result.completion,
-                        3,
-                    ),
 
                     result.sched.count,
                     result.sched.mean,
