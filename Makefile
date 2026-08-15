@@ -36,6 +36,7 @@ CORE := \
 	kernel/deque.c \
 	kernel/min_heap.c \
 	bench/ktrace.c \
+	bench/fault.c \
 	bench/pmu.c \
 	bench/telemetry.c \
 	bench/workload_edf.c \
@@ -45,6 +46,13 @@ CORE := \
 # ---------------------------------------------------------------------------
 # Compiler / linker
 # ---------------------------------------------------------------------------
+
+# Cache/MMU enables -- single source of truth: compiled into the code AND emitted
+# as absolute symbols (LDFLAGS below) so the host reads the config straight from
+# the .elf symbol table, without any runtime field or loaded-image inflation.
+ENABLE_MMU    ?= 0
+ENABLE_DCACHE ?= 0
+ENABLE_ICACHE ?= 0
 
 CFLAGS := \
 	-mcpu=cortex-a9 \
@@ -59,15 +67,18 @@ CFLAGS := \
 	-Ibench \
 	-DBOARD_DE1_SOC \
 	-DMODE_TEST \
-	-DENABLE_MMU=0 \
-	-DENABLE_DCACHE=0 \
-	-DENABLE_ICACHE=0
+	-DENABLE_MMU=$(ENABLE_MMU) \
+	-DENABLE_DCACHE=$(ENABLE_DCACHE) \
+	-DENABLE_ICACHE=$(ENABLE_ICACHE)
 
 
 LDFLAGS := \
 	-T linker/$(BOARD).ld \
 	-Wl,--build-id=none \
-	-Wl,-Map=build/test.map
+	-Wl,-Map=build/test.map \
+	-Wl,--defsym=_cfg_enable_mmu=$(ENABLE_MMU) \
+	-Wl,--defsym=_cfg_enable_dcache=$(ENABLE_DCACHE) \
+	-Wl,--defsym=_cfg_enable_icache=$(ENABLE_ICACHE)
 
 
 LIBGCC := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)

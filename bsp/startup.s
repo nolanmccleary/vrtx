@@ -156,21 +156,45 @@ _identify_and_clear_source:
 
 
 
+@; Synchronous-fault handlers. Capture the faulting PC (banked lr, adjusted per
+@; exception) and the pre-fault CPSR (banked spsr) BEFORE anything clobbers them,
+@; then fault_capture() reads the CP15 fault registers and fault_halt() stops the
+@; watchdog and traps at a host breakpoint. Vector ids match bench/fault.h.
 _undef_handler:
-    BL c_undef_handler
+    sub lr, lr, #4      @; faulting instruction address
+    mov r0, lr          @; arg1 = pc (saved before bl clobbers lr)
+    mrs r1, spsr        @; arg2 = pre-fault CPSR
+    mov r2, #1          @; arg3 = FAULT_UNDEF
+    bl fault_capture
+    bl fault_halt
     b .
 
 _swi_handler:
-    BL c_swi_handler
+    sub lr, lr, #4
+    mov r0, lr
+    mrs r1, spsr
+    mov r2, #2          @; FAULT_SWI
+    bl fault_capture
+    bl fault_halt
     b .
 
 _prefetch_handler:
-    BL c_prefetch_handler
+    sub lr, lr, #4
+    mov r0, lr
+    mrs r1, spsr
+    mov r2, #3          @; FAULT_PREFETCH
+    bl fault_capture
+    bl fault_halt
     b .
 
 _abort_handler:
-    BL c_abort_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source
-    b . @; For now just halt
+    sub lr, lr, #8      @; data abort: faulting instr = lr - 8
+    mov r0, lr
+    mrs r1, spsr
+    mov r2, #4          @; FAULT_DATA
+    bl fault_capture
+    bl fault_halt
+    b .
 
 
 @;REMEMBER: We are in SYS mode when IRQ fires. That means:

@@ -67,6 +67,58 @@ METRIC_SIZE = METRIC_STRUCT.size
 
 
 # =============================================================================
+# Fault decode  (bench/fault.h fault_record_t)
+# =============================================================================
+
+# fault_record_t: magic, vec, pc, spsr, dfsr, dfar, ifsr, ifar  (8 x u32)
+FAULT_STRUCT = struct.Struct("<8I")
+FAULT_MAGIC = 0x464C5431  # "FLT1"
+
+FAULT_VEC = {1: "undef", 2: "swi", 3: "prefetch abort", 4: "data abort", 5: "fiq"}
+
+# short-descriptor DFSR/IFSR fault status: FS = {bit10, bits[3:0]}
+FAULT_FS = {
+    0b00001: "alignment",
+    0b00101: "translation (L1)",
+    0b00111: "translation (L2)",
+    0b01000: "synchronous external abort",
+    0b01001: "domain (L1)",
+    0b01011: "domain (L2)",
+    0b01101: "permission (L1)",
+    0b01111: "permission (L2)",
+    0b10110: "asynchronous external abort",
+}
+
+
+def _fs_str(status: int) -> str:
+    fs = ((status >> 6) & 0x10) | (status & 0x0F)
+    return FAULT_FS.get(fs, f"FS=0b{fs:05b}")
+
+
+def fault_report(words: Sequence[int]) -> str | None:
+    if len(words) < 8 or words[0] != FAULT_MAGIC:
+        return None
+
+    _, vec, pc, spsr, dfsr, dfar, ifsr, ifar = words[:8]
+    name = FAULT_VEC.get(vec, f"vec={vec}")
+
+    lines = [
+        f"*** CPU FAULT: {name} ***",
+        f"  faulting PC = 0x{pc:08x}",
+        f"  SPSR        = 0x{spsr:08x}  (mode 0x{spsr & 0x1f:02x})",
+    ]
+    if vec == 4:  # data abort
+        wnr = "write" if (dfsr >> 11) & 1 else "read"
+        lines.append(f"  DFSR        = 0x{dfsr:08x}  ({_fs_str(dfsr)}, {wnr})")
+        lines.append(f"  DFAR        = 0x{dfar:08x}")
+    elif vec == 3:  # prefetch abort
+        lines.append(f"  IFSR        = 0x{ifsr:08x}  ({_fs_str(ifsr)})")
+        lines.append(f"  IFAR        = 0x{ifar:08x}")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
 # Result types
 # =============================================================================
 
@@ -154,6 +206,30 @@ def require_symbols(
         )
 
 
+def elf_cache_config(elf: Path) -> str:
+    """MMU / D-cache / I-cache enable state, read from the .elf. The Makefile
+    records the compile-time enables as absolute symbols (--defsym); nm needs -a
+    to list absolute symbols. No runtime field, no loaded-image inflation."""
+    output = subprocess.check_output(
+        ["arm-none-eabi-nm", "-a", str(elf)],
+        cwd=ROOT,
+        text=True,
+    )
+
+    vals: dict[str, int] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] in ("A", "a") and parts[2].startswith("_cfg_enable_"):
+            vals[parts[2]] = int(parts[0], 16)
+
+    onoff = lambda v: "on" if vals.get(v, 0) else "off"
+    return (
+        f"MMU {onoff('_cfg_enable_mmu')} · "
+        f"D {onoff('_cfg_enable_dcache')} · "
+        f"I {onoff('_cfg_enable_icache')}"
+    )
+
+
 # =============================================================================
 # OpenOCD
 # =============================================================================
@@ -163,6 +239,11 @@ class OCD:
     def __init__(self, spawn_tries: int = 4):
         self.proc = None
         self.sock = None
+
+        # Set by main() once symbols resolve, so halt/timeout paths can decode a
+        # CPU fault (bench/fault.c): breakpoint addr of fault_trap + addr of g_fault.
+        self.fault_bp: int | None = None
+        self.fault_addr: int | None = None
 
         for _ in range(spawn_tries):
 
@@ -388,6 +469,13 @@ class OCD:
             "timeout" in lowered
             or "timed out" in lowered
         ):
+            # A hang is often a captured CPU fault (target spun in fault_halt).
+            # Halt and check g_fault before reporting a bare timeout.
+            self.cmd("halt")
+            report = self.read_fault()
+            if report:
+                raise RuntimeError(report)
+
             raise RuntimeError(
                 f"target did not halt within "
                 f"{timeout:.1f}s:\n"
@@ -395,6 +483,16 @@ class OCD:
             )
 
         return self.pc()
+
+
+    def read_fault(self) -> str | None:
+        if self.fault_addr is None:
+            return None
+        try:
+            words = self.read_words(self.fault_addr, 8)
+        except Exception:
+            return None
+        return fault_report(words)
 
 
     # -------------------------------------------------------------------------
@@ -431,6 +529,13 @@ class OCD:
     ) -> None:
 
         pc = self.wait_halt(timeout)
+
+        if self.fault_bp is not None and pc == self.fault_bp:
+            report = self.read_fault()
+            raise RuntimeError(
+                report
+                or f"halted at fault_trap 0x{pc:08x} (no fault record)"
+            )
 
         if pc != expected_addr:
             raise RuntimeError(
@@ -835,7 +940,7 @@ def plot_alloc(
     ax.set_ylabel("cycles")
 
     ax.set_title(
-        "Allocator operation cost"
+        f"Allocator operation cost  ({elf_cache_config(TEST_ELF)})"
     )
 
     ax.grid(
@@ -1039,6 +1144,9 @@ def main() -> None:
             "ktrace_bp_alloc_done",
             "ktrace_bp_edf_ready",
             "ktrace_bp_edf_done",
+
+            "fault_trap",
+            "g_fault",
         ),
     )
 
@@ -1053,6 +1161,10 @@ def main() -> None:
 
     bp_edf_done = (
         symbols["ktrace_bp_edf_done"]
+    )
+
+    bp_fault = (
+        symbols["fault_trap"]
     )
 
 
@@ -1138,6 +1250,11 @@ def main() -> None:
         # Install semantic hardware breakpoints
         # ---------------------------------------------------------------------
 
+        # Let the halt/timeout paths decode a CPU fault instead of reporting a
+        # bare timeout (bench/fault.c: fault_trap marker + g_fault record).
+        ocd.fault_bp = bp_fault
+        ocd.fault_addr = symbols["g_fault"]
+
         ocd.add_hw_breakpoint(
             bp_alloc
         )
@@ -1148,6 +1265,10 @@ def main() -> None:
 
         ocd.add_hw_breakpoint(
             bp_edf_done
+        )
+
+        ocd.add_hw_breakpoint(
+            bp_fault
         )
 
 

@@ -30,29 +30,8 @@
 
 /////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
 
-
-void c_undef_handler(void)
-{
-    FLAG_WRITE(VECTOR_FLAG, 0x04);
-}
-
-
-void c_swi_handler(void)
-{
-    FLAG_WRITE(VECTOR_FLAG, 0x08);
-}
-
-
-void c_prefetch_handler(void)
-{
-    FLAG_WRITE(VECTOR_FLAG, 0x0C);
-}
-
-
-void c_abort_handler(void)
-{
-    FLAG_WRITE(VECTOR_FLAG, 0x10);
-}
+/* Synchronous faults (undef/swi/prefetch/data abort) are handled entirely in
+   bsp/startup.s -> bench/fault.c now (fault_capture + fault_halt); no C handler. */
 
 
 void c_irq_handler(int id)

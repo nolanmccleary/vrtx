@@ -47,23 +47,40 @@ SECTIONS
 
 
     /* ---------------------------------------------------------------------
-     * Host/test status region
+     * Host-shared NOLOAD region (status flags + telemetry + fault record)
+     *
+     * One merged region the host reads over JTAG. NOLOAD: the firmware
+     * initializes each part at runtime (telemetry_init, fault handlers), so a
+     * warm reset / reload leaves it intact.
      * --------------------------------------------------------------------- */
 
-    .status ORIGIN(OCRAM) (NOLOAD) :
+    .host_shared ORIGIN(OCRAM) (NOLOAD) :
     {
         _status_base = .;
+        . = . + _capture_region;      /* status/flag words at OCRAM origin */
 
-        . = . + _capture_region;
+        . = ALIGN(8);
+        _telemetry_start = .;
+        KEEP(*(.telemetry))           /* g_telemetry */
+        . = ALIGN(8);
+        _telemetry_end = .;
+
+        _fault_start = .;
+        KEEP(*(.fault))               /* g_fault */
+
+        . = ALIGN(4);
+        _host_shared_end = .;
     } > OCRAM
+
+    _telemetry_size = _telemetry_end - _telemetry_start;
 
 
 
     /* ---------------------------------------------------------------------
-     * Exception vectors
+     * Exception vectors (32-byte aligned for VBAR)
      * --------------------------------------------------------------------- */
 
-    ._vectors ORIGIN(OCRAM) + _capture_region :
+    ._vectors ALIGN(32) :
     {
         KEEP(*(._vectors))
 
@@ -82,27 +99,6 @@ SECTIONS
         *(.rodata*)
 
         . = ALIGN(4);
-    } > OCRAM
-
-
-
-    /* ---------------------------------------------------------------------
-     * Static ELF metadata
-     * --------------------------------------------------------------------- */
-
-    .qmeta_hdr :
-    {
-        . = ALIGN(4);
-
-        KEEP(*(.qmeta_hdr))
-    } > OCRAM
-
-
-    .qmeta_regions :
-    {
-        . = ALIGN(4);
-
-        KEEP(*(.qmeta_regions))
     } > OCRAM
 
 
@@ -147,29 +143,6 @@ SECTIONS
 
 
     /* ---------------------------------------------------------------------
-     * Benchmark telemetry
-     *
-     * NOLOAD: telemetry_init() initializes this explicitly.
-     * --------------------------------------------------------------------- */
-
-    .telemetry (NOLOAD) :
-    {
-        . = ALIGN(8);
-
-        _telemetry_start = .;
-
-        KEEP(*(.telemetry))
-
-        . = ALIGN(8);
-
-        _telemetry_end = .;
-    } > OCRAM
-
-    _telemetry_size = _telemetry_end - _telemetry_start;
-
-
-
-    /* ---------------------------------------------------------------------
      * OCRAM stacks
      *
      * top-down:
@@ -197,7 +170,7 @@ SECTIONS
 
 
     ASSERT(
-        _telemetry_end <= _sys_stack_top - _stack_size,
-        "ERROR: .telemetry overflows OCRAM into the SYS stack"
+        _bss_end <= _sys_stack_top - _stack_size,
+        "ERROR: OCRAM image overflows into the SYS stack"
     )
 }
