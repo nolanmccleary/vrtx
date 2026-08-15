@@ -35,6 +35,8 @@ static void thread_exit()
 }
 
 
+
+
 static inline void start_thread(thread_t* thread)
 {
     uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
@@ -61,8 +63,8 @@ static inline void start_thread(thread_t* thread)
     uint32_t adjustment = ((uint32_t)sp) & 4;
     sp = (uint32_t*)((uint32_t)sp - adjustment);
 
-    *(--sp) = (uint32_t)thread_exit;
-    *(--sp) = adjustment; // alignment
+    *(--sp) = (uint32_t)thread_exit; //lr
+    *(--sp) = adjustment; //store adjustment
 
     thread->sp = (char*)sp;
     thread->thread_status = RUNNING;
@@ -144,7 +146,7 @@ sys_exit_e psched_deinit()
 
 
 
-sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity)
+sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, thread_handle_t* handle)
 {
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
     new_thread->period = period;
@@ -155,8 +157,30 @@ sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodic
 
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
 
+    handle->thread = new_thread;
+
     return SYS_OK;
 }
+
+
+
+
+sys_exit_e kill_thread(thread_handle_t* handle)
+{
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    handle->thread->periodicity = APERIODIC;
+    handle->thread->thread_status = FINISHED;
+    if (handle->thread == curr_thread)
+    {
+        next_thread();
+    }
+
+    __asm__ __volatile__("cpsie i" ::: "memory");
+
+    return SYS_OK;
+}
+
 
 
 

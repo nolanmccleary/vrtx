@@ -69,9 +69,12 @@ static void mmu_cache_init(void)
     volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
     uint32_t r;
 
-    for (int i = 4095; i >= 1; i--)
-        ttb[i] = ((uint32_t)i << 20) | 0x0DE2u;
-    ttb[0] = 0x00015DE6u;  /* section 0: normal, WBWA, shareable */
+    /* SDRAM (0x0..0x40000000, sections 0..1023) = Normal, WB write-allocate,
+       shareable (cacheable). Everything above (peripherals + OCRAM) = device /
+       strongly-ordered. Caching the SDRAM heap is what makes the D-cache do work;
+       OCRAM stays uncached so JTAG reads of the host-shared region stay coherent. */
+    for (int i = 4095; i >= 0; i--)
+        ttb[i] = ((uint32_t)i << 20) | (i < 1024 ? 0x15DE6u : 0x0DE2u);
 
     uint32_t ttbr = 0x00100000u;
     uint32_t dacr = 0x55555555u;
@@ -83,6 +86,14 @@ static void mmu_cache_init(void)
     sctlr_bits |= 0x1000u;       /* I = I-cache */
 #endif
     __asm__ volatile (
+        /* ACTLR.SMP = 1 (bit 6). REQUIRED on the A9 before enabling caches: with
+           SMP=0 the core treats Normal *Shareable* memory as Non-cacheable, so the
+           D-cache never allocates for our shareable SDRAM heap (descriptor S bit).
+           Must be set before SCTLR.C. */
+        "mrc     p15, 0, %0, c1, c0, 1\n\t"
+        "orr     %0, %0, #0x40\n\t"
+        "mcr     p15, 0, %0, c1, c0, 1\n\t"
+        "isb\n\t"
         "mov     %0, #0\n\t"
         "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0 */
         "mcr     p15, 0, %1, c2, c0, 0\n\t"   /* TTBR0 */

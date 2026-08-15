@@ -34,7 +34,7 @@ RESULTS_DIR = ROOT / "test_results"
 EDF_SECONDS = 12.0
 
 EDF_TASKS = 3
-ALLOC_METRICS = 4
+ALLOC_METRICS = 5   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k
 
 GANTT_U = 700              # the one U trial whose schedule is traced (matches workload_edf.c)
 TRACE_TICKS = 1200         # g_sched_trace capacity (must match workload_edf.c)

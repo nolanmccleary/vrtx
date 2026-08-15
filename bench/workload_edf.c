@@ -1,5 +1,4 @@
 #include <stdint.h>
-
 #include "ktrace.h"
 #include "pmu.h"
 #include "preempt_sched.h"
@@ -314,13 +313,14 @@ void edf_run(void)
 
         g_test_release = 0u;
 
-
+        thread_handle_t handles [NTASKS];
         for (uint32_t i = 0; i < NTASKS; i++)
         {
             add_thread(
                 JOBS[i],
                 g_edf_periods[i],
-                PERIODIC
+                PERIODIC,
+                &handles[i]
             );
         }
 
@@ -374,7 +374,11 @@ void edf_run(void)
         );
 
 
-        psched_clear_threads();
+        // psched_clear_threads();
+        for (uint32_t i = 0; i < NTASKS; i++)
+        {
+            kill_thread (&handles[i]);
+        }
 
 
         __asm__ __volatile__(

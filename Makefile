@@ -50,9 +50,9 @@ CORE := \
 # Cache/MMU enables -- single source of truth: compiled into the code AND emitted
 # as absolute symbols (LDFLAGS below) so the host reads the config straight from
 # the .elf symbol table, without any runtime field or loaded-image inflation.
-ENABLE_MMU    ?= 0
-ENABLE_DCACHE ?= 0
-ENABLE_ICACHE ?= 0
+ENABLE_MMU    ?= 1
+ENABLE_DCACHE ?= 1
+ENABLE_ICACHE ?= 1
 
 # Dev convenience: hold the L4 watchdog in reset at boot so a hang/fault never
 # resets the HPS (which drops the JTAG-DP and wedges the USB-Blaster). Set to 0
