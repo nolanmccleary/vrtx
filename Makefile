@@ -54,6 +54,11 @@ ENABLE_MMU    ?= 0
 ENABLE_DCACHE ?= 0
 ENABLE_ICACHE ?= 0
 
+# Dev convenience: hold the L4 watchdog in reset at boot so a hang/fault never
+# resets the HPS (which drops the JTAG-DP and wedges the USB-Blaster). Set to 0
+# for a "real" build that wants watchdog protection.
+DISABLE_WDT   ?= 1
+
 CFLAGS := \
 	-mcpu=cortex-a9 \
 	-marm \
@@ -69,7 +74,8 @@ CFLAGS := \
 	-DMODE_TEST \
 	-DENABLE_MMU=$(ENABLE_MMU) \
 	-DENABLE_DCACHE=$(ENABLE_DCACHE) \
-	-DENABLE_ICACHE=$(ENABLE_ICACHE)
+	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
+	-DDISABLE_WDT=$(DISABLE_WDT)
 
 
 LDFLAGS := \

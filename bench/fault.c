@@ -6,11 +6,6 @@
 fault_record_t g_fault __attribute__((section(".fault"), used));
 
 
-/* L4 watchdog module reset bits in RSTMGR permodrst (Cyclone V): l4wd0=6, l4wd1=7. */
-#define RSTMGR_PERMODRST_L4WD0  (1U << 6)
-#define RSTMGR_PERMODRST_L4WD1  (1U << 7)
-
-
 /* CP15 fault status/address registers (ARMv7-A). */
 static inline uint32_t rd_dfsr(void) { uint32_t v; __asm__ volatile("mrc p15,0,%0,c5,c0,0" : "=r"(v)); return v; }
 static inline uint32_t rd_dfar(void) { uint32_t v; __asm__ volatile("mrc p15,0,%0,c6,c0,0" : "=r"(v)); return v; }

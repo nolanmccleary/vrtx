@@ -236,23 +236,31 @@ def elf_cache_config(elf: Path) -> str:
 
 class OCD:
 
-    def __init__(self, spawn_tries: int = 4):
+    def __init__(self, spawn_tries: int = 3):
         self.proc = None
         self.sock = None
+        self.owns_daemon = False
 
         # Set by main() once symbols resolve, so halt/timeout paths can decode a
         # CPU fault (bench/fault.c): breakpoint addr of fault_trap + addr of g_fault.
         self.fault_bp: int | None = None
         self.fault_addr: int | None = None
 
-        for _ in range(spawn_tries):
+        # Reuse an already-running daemon (e.g. started by openocd/ocd) rather than
+        # spawning + SIGKILL-ing a fresh openocd -- the open/hard-kill churn is the
+        # main cause of USB-Blaster wedging (stale libusb endpoints -> timeouts).
+        if self._connect():
+            return
 
-            subprocess.run(
-                ["pkill", "-9", "openocd"],
-                stderr=subprocess.DEVNULL,
-            )
+        for attempt in range(spawn_tries):
 
-            time.sleep(0.5)
+            if attempt > 0:
+                # Only reap a stale/wedged daemon as a fallback, not by default.
+                subprocess.run(
+                    ["pkill", "-9", "openocd"],
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.5)
 
             self.proc = subprocess.Popen(
                 [
@@ -266,31 +274,42 @@ class OCD:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self.owns_daemon = True
 
             for _ in range(30):
 
                 if self.proc.poll() is not None:
                     break
 
-                try:
-                    sock = socket.socket()
-                    sock.connect(("localhost", 6666))
-                    sock.settimeout(45)
-
-                    self.sock = sock
-                    self.cmd("cortex_a maskisr on")
-
+                if self._connect():
                     return
 
-                except ConnectionRefusedError:
-                    time.sleep(0.5)
+                time.sleep(0.5)
 
             if self.proc.poll() is None:
                 self.proc.kill()
 
         raise RuntimeError(
-            "OpenOCD/JTAG did not come up"
+            "OpenOCD/JTAG did not come up "
+            "(USB-Blaster wedged? power-cycle it)"
         )
+
+
+    def _connect(self) -> bool:
+        try:
+            sock = socket.socket()
+            sock.connect(("localhost", 6666))
+            sock.settimeout(45)
+
+            self.sock = sock
+            self.cmd("cortex_a maskisr on")
+            self.cmd("rbp all")           # clear any stale breakpoints on reuse
+
+            return True
+
+        except (ConnectionRefusedError, OSError):
+            self.sock = None
+            return False
 
 
     def __enter__(self) -> "OCD":
@@ -556,10 +575,13 @@ class OCD:
 
         if self.sock is not None:
 
-            try:
-                self.cmd("shutdown")
-            except Exception:
-                pass
+            # Only shut the daemon down if WE started it; a reused external daemon
+            # (openocd/ocd) is left running for further debugging.
+            if self.owns_daemon:
+                try:
+                    self.cmd("shutdown")
+                except Exception:
+                    pass
 
             try:
                 self.sock.close()
@@ -570,7 +592,8 @@ class OCD:
 
 
         if (
-            self.proc is not None
+            self.owns_daemon
+            and self.proc is not None
             and self.proc.poll() is None
         ):
             self.proc.kill()

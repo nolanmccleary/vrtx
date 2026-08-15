@@ -136,6 +136,8 @@
 #define RSTMGR_BASE             0xFFD05000U
 #define RSTMGR_PERMODRST        (*(volatile uint32_t*)(RSTMGR_BASE + 0x14U))
 #define RSTMGR_PERMODRST_SDR    (1U << 29)
+#define RSTMGR_PERMODRST_L4WD0  (1U << 6)   /* L4 watchdog 0 module reset */
+#define RSTMGR_PERMODRST_L4WD1  (1U << 7)   /* L4 watchdog 1 module reset */
 
 /* System Manager: 0xFFD08000 */
 #define SYSMGR_BASE             0xFFD08000U

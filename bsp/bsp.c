@@ -40,7 +40,9 @@ void c_irq_handler(int id)
     switch(id)
     {
         case 0x1b:
+#if !DISABLE_WDT
             WDT_L4 = 0x76; //Feed WDT
+#endif
             GTIMER_ISR = 1;
             FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
             next_thread(); 
@@ -133,6 +135,12 @@ void bsp_gic_init(void)
 
 static void bsp_early_init(void)
 {
+#if DISABLE_WDT
+    /* Hold the L4 watchdogs in reset so no hang/fault ever resets the HPS (which
+       drops the JTAG-DP and wedges the USB-Blaster). Dev-only; see Makefile. */
+    RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
+#endif
+
 #ifdef BOARD_DE1_SOC
     pll_init();
     scan_mgr_init();
