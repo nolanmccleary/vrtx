@@ -36,9 +36,9 @@ EDF_SECONDS = 12.0
 EDF_TASKS = 3
 ALLOC_METRICS = 6   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, matmul_32
 
-GANTT_U = 700              # the one U trial whose schedule is traced (matches workload_edf.c)
-TRACE_TICKS = 1200         # g_sched_trace capacity (must match workload_edf.c)
-GANTT_WINDOW = 240         # ticks shown in the Gantt (readability)
+TRACE_TICKS = 2400         # g_sched_trace capacity (must match workload_edf.c); 4 hyperperiods (lcm(40,60,100)=600)
+GANTT_WINDOW = 720         # ticks shown in the Gantt -- 3x the original 240 (>1 hyperperiod), rest of the 2400-tick capture is unshown
+COMFORTABLE_U = 700        # always plot this well-under-capacity trial as a baseline
 
 
 # =============================================================================
@@ -1185,6 +1185,8 @@ def plot_gantt(
     periods: Sequence[int],
     path: Path,
     u_permille: int,
+    u_actual: float = 0.0,
+    label: str = "",
     window: int = GANTT_WINDOW,
 ) -> None:
 
@@ -1192,7 +1194,8 @@ def plot_gantt(
     nt = len(periods)
     colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
 
-    fig, ax = plt.subplots(figsize=(12, 2.6))
+    width = min(26.0, max(12.0, n / 130.0))          # scale width with the window shown
+    fig, ax = plt.subplots(figsize=(width, 2.6))
 
     for i in range(nt):
         y = nt - 1 - i                                   # task 0 at top
@@ -1227,7 +1230,9 @@ def plot_gantt(
     ax.set_xlim(0, n)
     ax.set_xlabel("time (ticks)")
     ax.set_title(
-        f"EDF schedule  (U={u_permille / 1000:.2f}, "
+        f"EDF schedule  (Ureq={u_permille / 1000:.3f}, "
+        f"Uact={u_actual:.3f}"
+        f"{', ' + label if label else ''}; "
         f"first {n} ticks; up-arrow = release)"
     )
     ax.grid(axis="x", alpha=0.3)
@@ -1448,7 +1453,7 @@ def main() -> None:
         print_edf_header()
 
 
-        gantt_trace: list[int] | None = None
+        traces: dict[int, Sequence[int]] = {}   # u_permille -> schedule trace
 
 
         for (
@@ -1547,21 +1552,21 @@ def main() -> None:
 
 
             # -----------------------------------------------------------------
-            # Capture the schedule trace for the one representative trial.
-            # Target is halted, so the JTAG read is coherent.
+            # Capture this trial's schedule trace. Every trial is traced; we
+            # keep them all and choose which to plot once the sweep's miss
+            # pattern is known. Target is halted, so the JTAG read is coherent.
             # -----------------------------------------------------------------
 
-            if result.u_permille == GANTT_U:
-                trace_len = min(
-                    ocd.read_u32(symbols["g_trace_len"]),
-                    TRACE_TICKS,
-                )
+            trace_len = min(
+                ocd.read_u32(symbols["g_trace_len"]),
+                TRACE_TICKS,
+            )
 
-                if trace_len:
-                    gantt_trace = ocd.read_bytes(
-                        symbols["g_sched_trace"],
-                        trace_len,
-                    )
+            if trace_len:
+                traces[result.u_permille] = ocd.read_bytes(
+                    symbols["g_sched_trace"],
+                    trace_len,
+                )
 
 
             # -----------------------------------------------------------------
@@ -1640,12 +1645,42 @@ def main() -> None:
     )
 
 
-    if gantt_trace is not None:
+    # Gantt charts at the schedulability transition, not a fixed U: the highest
+    # utilization that still met every deadline, the lowest that missed one, and
+    # the top of the sweep. These are only known once all misses are collected.
+    result_by_u = {r.u_permille: r for r in edf_results}
+    swept_us = sorted(result_by_u)
+
+    no_miss_us = [u for u in swept_us if result_by_u[u].misses == 0]
+    miss_us    = [u for u in swept_us if result_by_u[u].misses > 0]
+
+    gantt_labels: dict[int, list[str]] = {}   # u_permille -> chart labels (deduped)
+
+    if COMFORTABLE_U in result_by_u:
+        gantt_labels.setdefault(COMFORTABLE_U, []).append("comfortable")
+
+    if no_miss_us:
+        gantt_labels.setdefault(max(no_miss_us), []).append("last no-miss")
+
+    if miss_us:
+        gantt_labels.setdefault(min(miss_us), []).append("first miss")
+
+    if swept_us:
+        gantt_labels.setdefault(max(swept_us), []).append("max U")
+
+    for u_permille in sorted(gantt_labels):
+        trace = traces.get(u_permille)
+
+        if trace is None:
+            continue
+
         plot_gantt(
-            gantt_trace,
+            trace,
             periods,
-            outdir / "edf_schedule.png",
-            GANTT_U,
+            outdir / f"edf_schedule_u{u_permille / 1000:.3f}.png",
+            u_permille,
+            u_actual=result_by_u[u_permille].actual_u,
+            label=" / ".join(gantt_labels[u_permille]),
         )
 
 

@@ -63,75 +63,125 @@ void c_fiq_handler(int id)
 
 ///////////////////////////////////////////// MMU INIT /////////////////////////////
 
+/*
+ * ARMv7-A short-descriptor translation tables, identity-mapped (physical == virtual).
+ * The tables live in otherwise-unused SDRAM below the heap.
+ */
+#define L1_TABLE_ADDR              0x00100000u   /* first-level table: 4096 x 1 MB entries (16 KB) */
+#define L2_TABLE_ADDR             0x00104000u   /* one second-level table: 256 x 4 KB entries (1 KB) */
+
+#define SECTION_ADDR_SHIFT        20u           /* 1 MB sections */
+#define PAGE_ADDR_SHIFT           12u           /* 4 KB pages    */
+
+#define TOTAL_SECTIONS            4096u          /* 4 GB / 1 MB */
+#define CACHEABLE_SDRAM_SECTIONS  1024u          /* 0x00000000..0x3FFFFFFF is the DDR heap window */
+#define PAGES_PER_SECTION         256u           /* 1 MB / 4 KB */
+
+/* Section 0xFFF (0xFFF00000..0xFFFFFFFF) packs the GIC, the global timer and the
+ * 64 KB OCRAM together, so it needs 4 KB granularity to cache OCRAM code without
+ * caching the MMIO next to it. */
+#define SHARED_MMIO_SECTION       0xFFFu
+
+/* Memory-type attribute bits, OR'd onto the identity base address. */
+#define SECTION_ATTR_CACHEABLE    0x15DE6u       /* Normal, write-back write-allocate, shareable */
+#define SECTION_ATTR_DEVICE       0x0DE2u        /* Strongly-ordered: MMIO + JTAG-visible RAM (uncached) */
+#define PAGE_ATTR_CACHEABLE       0x00576u       /* Normal WBWA shareable, small-page format */
+#define PAGE_ATTR_DEVICE          0x00032u       /* Strongly-ordered, small-page format */
+
+/* An L1 entry that delegates its megabyte to a second-level table. */
+#define L1_ATTR_POINTS_TO_L2      0x1u           /* descriptor type bits [1:0] = 0b01 */
+#define L1_DOMAIN_CLIENT          (15u << 5)     /* domain 15; DACR marks every domain "client" */
+
+/* System / auxiliary control-register bits, applied together once tables are built. */
+#define SCTLR_ENABLE_MMU          0x0001u
+#define SCTLR_ENABLE_DCACHE       0x0004u
+#define SCTLR_ENABLE_ICACHE       0x1000u
+#define ACTLR_ENABLE_SMP          0x0040u        /* coherency; must be set before caches on the A9 */
+#define DACR_ALL_DOMAINS_CLIENT   0x55555555u
+
+
 static void mmu_cache_init(void)
 {
 #if ENABLE_MMU
-    volatile uint32_t *ttb = (volatile uint32_t *)0x00100000u;
-    uint32_t r;
+    volatile uint32_t *l1_table = (volatile uint32_t *)L1_TABLE_ADDR;
 
-    /* SDRAM (0x0..0x40000000, sections 0..1023) = Normal, WB write-allocate,
-       shareable (cacheable). Everything above (peripherals + OCRAM) = device /
-       strongly-ordered. Caching the SDRAM heap is what makes the D-cache do work;
-       OCRAM stays uncached so JTAG reads of the host-shared region stay coherent. */
-    for (int i = 4095; i >= 0; i--)
-        ttb[i] = ((uint32_t)i << 20) | (i < 1024 ? 0x15DE6u : 0x0DE2u);
-
-#if ENABLE_ICACHE                                   //Keep GIC and other MMIO + JTAG read targets uncached, requires 2 level translation for more page granularity
-    extern uint32_t _itext_start, _itext_end;
-    uint32_t itext_lo = (uint32_t)&_itext_start;
-    uint32_t itext_hi = (uint32_t)&_itext_end;
-
-    volatile uint32_t *l2 = (volatile uint32_t *)0x00104000u;   /* just past the 16 KB L1 table */
-    for (int p = 0; p < 256; p++)
+    /* Map the DDR heap window cacheable and everything else (peripherals + OCRAM)
+       as strongly-ordered device memory. */
+    for (uint32_t section = 0; section < TOTAL_SECTIONS; section++)
     {
-        uint32_t va = 0xFFF00000u + ((uint32_t)p << 12);
-        int cache = (va >= itext_lo && va < itext_hi);
-        l2[p] = va | (cache ? 0x576u : 0x032u);
+        uint32_t section_base = section << SECTION_ADDR_SHIFT;
+        uint32_t attributes   = (section < CACHEABLE_SDRAM_SECTIONS)
+                              ? SECTION_ATTR_CACHEABLE
+                              : SECTION_ATTR_DEVICE;
+
+        l1_table[section] = section_base | attributes;
     }
 
-    /* L1[0xFFF] -> page-table descriptor (bits[1:0]=01) at the L2 base, domain 15. */
-    ttb[0xFFF] = 0x00104000u | (15u << 5) | 0x1u;
+#if ENABLE_ICACHE
+    /* Split the shared MMIO/OCRAM megabyte into 4 KB pages: mark only the OCRAM
+       code range [_itext_start, _itext_end) cacheable so the I-cache can hold it;
+       the GIC, the timer, and the JTAG-visible data pages stay device. */
+    extern uint32_t _itext_start;
+    extern uint32_t _itext_end;
+    uint32_t code_start = (uint32_t)&_itext_start;
+    uint32_t code_end   = (uint32_t)&_itext_end;
+
+    volatile uint32_t *l2_table = (volatile uint32_t *)L2_TABLE_ADDR;
+
+    for (uint32_t page = 0; page < PAGES_PER_SECTION; page++)
+    {
+        uint32_t page_base    = (SHARED_MMIO_SECTION << SECTION_ADDR_SHIFT)
+                              + (page << PAGE_ADDR_SHIFT);
+        int      is_code_page = (page_base >= code_start) && (page_base < code_end);
+        uint32_t attributes   = is_code_page ? PAGE_ATTR_CACHEABLE : PAGE_ATTR_DEVICE;
+
+        l2_table[page] = page_base | attributes;
+    }
+
+    l1_table[SHARED_MMIO_SECTION] = L2_TABLE_ADDR | L1_DOMAIN_CLIENT | L1_ATTR_POINTS_TO_L2;
 #endif
 
-    uint32_t ttbr = 0x00100000u;
-    uint32_t dacr = 0x55555555u;
-    uint32_t sctlr_bits = 0x1u;  /* M = MMU */
+    uint32_t ttbr0          = L1_TABLE_ADDR;
+    uint32_t dacr           = DACR_ALL_DOMAINS_CLIENT;
+    uint32_t smp_bit        = ACTLR_ENABLE_SMP;
+    uint32_t sctlr_enables  = SCTLR_ENABLE_MMU;
 #if ENABLE_DCACHE
-    sctlr_bits |= 0x4u;          /* C = D-cache */
+    sctlr_enables |= SCTLR_ENABLE_DCACHE;
 #endif
 #if ENABLE_ICACHE
-    sctlr_bits |= 0x1000u;       /* I = I-cache */
+    sctlr_enables |= SCTLR_ENABLE_ICACHE;
 #endif
+
+    uint32_t scratch;
     __asm__ volatile (
-        /* ACTLR.SMP = 1 (bit 6). REQUIRED on the A9 before enabling caches: with
-           SMP=0 the core treats Normal *Shareable* memory as Non-cacheable, so the
-           D-cache never allocates for our shareable SDRAM heap (descriptor S bit).
-           Must be set before SCTLR.C. */
-        "mrc     p15, 0, %0, c1, c0, 1\n\t"
-        "orr     %0, %0, #0x40\n\t"
-        "mcr     p15, 0, %0, c1, c0, 1\n\t"
+        "mrc     p15, 0, %0, c1, c0, 1\n\t"   /* read  ACTLR                         */
+        "orr     %0, %0, %4\n\t"              /* set   SMP (coherency, before caches)*/
+        "mcr     p15, 0, %0, c1, c0, 1\n\t"   /* write ACTLR                         */
         "isb\n\t"
         "mov     %0, #0\n\t"
-        "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0 */
-        "mcr     p15, 0, %1, c2, c0, 0\n\t"   /* TTBR0 */
-        "mcr     p15, 0, %2, c3, c0, 0\n\t"   /* DACR = all client */
+        "mcr     p15, 0, %0, c2, c0, 2\n\t"   /* TTBCR = 0  (all translation via TTBR0) */
+        "mcr     p15, 0, %1, c2, c0, 0\n\t"   /* TTBR0 = L1 table base               */
+        "mcr     p15, 0, %2, c3, c0, 0\n\t"   /* DACR                                */
         "dsb\n\t"
-        "mrc     p15, 0, %0, c1, c0, 0\n\t"
-        "orr     %0, %0, %3\n\t"
-        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"   /* read  SCTLR                         */
+        "orr     %0, %0, %3\n\t"              /* set   MMU / cache enable bits       */
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"   /* write SCTLR  (MMU + caches on)      */
         "isb\n"
-        : "=&r"(r)
-        : "r"(ttbr), "r"(dacr), "r"(sctlr_bits)
+        : "=&r"(scratch)
+        : "r"(ttbr0), "r"(dacr), "r"(sctlr_enables), "r"(smp_bit)
         : "memory"
     );
 #elif ENABLE_ICACHE
-    uint32_t r;
+    uint32_t icache_bit = SCTLR_ENABLE_ICACHE;
+    uint32_t scratch;
     __asm__ volatile (
-        "mrc     p15, 0, %0, c1, c0, 0\n\t"
-        "orr     %0, %0, #0x1000\n\t"          /* I = I-cache (no MMU needed) */
-        "mcr     p15, 0, %0, c1, c0, 0\n\t"
+        "mrc     p15, 0, %0, c1, c0, 0\n\t"   /* read  SCTLR                */
+        "orr     %0, %0, %1\n\t"              /* set   I-cache (no MMU needed) */
+        "mcr     p15, 0, %0, c1, c0, 0\n\t"   /* write SCTLR                */
         "isb\n"
-        : "=&r"(r) : : "memory"
+        : "=&r"(scratch)
+        : "r"(icache_bit)
+        : "memory"
     );
 #endif
 }

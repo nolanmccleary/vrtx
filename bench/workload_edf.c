@@ -9,8 +9,7 @@
 #define NTASKS       3u
 #define CALIB_ITERS  200000u
 
-#define TRACE_TICKS  1200u          /* per-tick schedule-trace window for the host Gantt */
-#define GANTT_U      700u           /* the one U trial whose schedule we trace */
+#define TRACE_TICKS  2400u          /* per-tick schedule-trace window for the host Gantt; 4 hyperperiods (lcm(40,60,100)=600) */
 
 #define ARRAY_LEN(a) \
     (sizeof(a) / sizeof((a)[0]))
@@ -54,7 +53,7 @@ volatile uint32_t g_edf_done[NTASKS];
 
 volatile uint8_t  g_sched_trace[TRACE_TICKS];
 volatile uint32_t g_trace_len;
-static uint32_t trace_active;   /* 1 while the current trial is the one being traced */
+static uint32_t trace_active;   /* 1 while a trial is running (every trial is traced) */
 static uint32_t iters[NTASKS];
 
 
@@ -224,7 +223,7 @@ static void reset_trial(void)
 
 
     g_trace_len    = 0u;
-    trace_active = (g_edf_u_permille == GANTT_U);
+    trace_active   = 1u;   /* trace every trial; the host reads each one and picks which to plot */
 
 
     for (uint32_t i = 0; i < NTASKS; i++)
