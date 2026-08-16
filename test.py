@@ -34,7 +34,7 @@ RESULTS_DIR = ROOT / "test_results"
 EDF_SECONDS = 12.0
 
 EDF_TASKS = 3
-ALLOC_METRICS = 5   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k
+ALLOC_METRICS = 6   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, matmul_32
 
 GANTT_U = 700              # the one U trial whose schedule is traced (matches workload_edf.c)
 TRACE_TICKS = 1200         # g_sched_trace capacity (must match workload_edf.c)
@@ -839,6 +839,56 @@ def write_alloc_csv(
             )
 
 
+def write_cache_csv(
+    path: Path,
+    metrics: Sequence[Metric],
+) -> None:
+    """CSV companion to cache_workloads.png -- the cache-sensitive metrics for
+    ONE cache configuration. cache_config is stamped on every row so the file is
+    self-documenting; compare configs by diffing two runs' files. For
+    mem_walk_8k, min_cyc is the warm (steady, cache-hit) pass and max_cyc is the
+    cold (pass-0 fill) pass -- a large gap means the D-cache is live."""
+
+    by_name = {m.name: m for m in metrics}
+    config = elf_cache_config(TEST_ELF)
+
+    with path.open(
+        "w",
+        newline="",
+    ) as file:
+
+        writer = csv.writer(file)
+
+        writer.writerow(
+            [
+                "workload",
+                "cache_config",
+                "count",
+                "mean_cyc",
+                "min_cyc",
+                "max_cyc",
+            ]
+        )
+
+        for name in ("mem_walk_8k", "matmul_32"):
+
+            metric = by_name.get(name)
+
+            if metric is None:
+                continue
+
+            writer.writerow(
+                [
+                    metric.name,
+                    config,
+                    metric.count,
+                    metric.mean,
+                    metric.minimum,
+                    metric.maximum,
+                ]
+            )
+
+
 def write_edf_csv(
     path: Path,
     rows: Sequence[EDFResult],
@@ -969,6 +1019,70 @@ def plot_alloc(
     ax.grid(
         axis="y",
         alpha=0.3,
+    )
+
+    fig.tight_layout()
+
+    fig.savefig(
+        path,
+        dpi=130,
+    )
+
+    plt.close(fig)
+
+
+def plot_cache(
+    metrics: Sequence[Metric],
+    path: Path,
+) -> None:
+    """Cache-sensitive workloads, kept off the allocator chart because their
+    cycle scale is 10-200x larger. Each figure is a permanent record of ONE
+    cache configuration (stamped in the title via elf_cache_config); compare
+    configs by running the battery twice and setting the two figures side by
+    side. mem_walk_8k is shown as cold (pass 0 fill) vs warm (steady hits): a
+    tall gap means the D-cache is live, a flat pair means it isn't."""
+
+    by_name = {m.name: m for m in metrics}
+    memwalk = by_name.get("mem_walk_8k")
+    matmul = by_name.get("matmul_32")
+
+    fig, (ax_mw, ax_mm) = plt.subplots(
+        1, 2, figsize=(9, 4)
+    )
+
+    if memwalk is not None:
+        ax_mw.bar(
+            ["cold\n(pass 0)", "warm\n(steady)"],
+            [memwalk.maximum, memwalk.minimum],
+            color=["#c0504d", "#4f81bd"],
+        )
+        ax_mw.set_title(
+            f"{memwalk.name}: SDRAM RMW / 8 KB pass"
+        )
+
+    ax_mw.set_ylabel("cycles")
+    ax_mw.grid(axis="y", alpha=0.3)
+
+    if matmul is not None:
+        ax_mm.bar(
+            [matmul.name],
+            [matmul.mean],
+            yerr=[
+                [matmul.mean - matmul.minimum],
+                [matmul.maximum - matmul.mean],
+            ],
+            capsize=6,
+            color="#9bbb59",
+        )
+        ax_mm.set_title(
+            f"{matmul.name}: compute time-to-complete"
+        )
+
+    ax_mm.set_ylabel("cycles")
+    ax_mm.grid(axis="y", alpha=0.3)
+
+    fig.suptitle(
+        f"Cache-sensitive workloads  ({elf_cache_config(TEST_ELF)})"
     )
 
     fig.tight_layout()
@@ -1492,7 +1606,13 @@ def main() -> None:
 
     write_alloc_csv(
         outdir / "alloc.csv",
-        alloc_metrics,
+        alloc_metrics[:4],                 # malloc / free / *_loaded
+    )
+
+
+    write_cache_csv(
+        outdir / "cache_workloads.csv",
+        alloc_metrics,                     # picks out mem_walk_8k + matmul_32 by name
     )
 
 
@@ -1503,8 +1623,14 @@ def main() -> None:
 
 
     plot_alloc(
-        alloc_metrics,
+        alloc_metrics[:4],                 # malloc / free / *_loaded -- same ~2k scale
         outdir / "alloc_timing.png",
+    )
+
+
+    plot_cache(
+        alloc_metrics,                     # picks out mem_walk_8k + matmul_32 by name
+        outdir / "cache_workloads.png",
     )
 
 

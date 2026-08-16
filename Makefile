@@ -40,7 +40,8 @@ CORE := \
 	bench/pmu.c \
 	bench/telemetry.c \
 	bench/workload_edf.c \
-	bench/workload_allocbench.c
+	bench/workload_allocbench.c \
+	bench/workload_compute.c
 
 
 # ---------------------------------------------------------------------------

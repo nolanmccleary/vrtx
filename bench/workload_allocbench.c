@@ -5,6 +5,7 @@
 #include "telemetry.h"
 #include "thread.h"
 #include "tlsf.h"
+#include "workload_compute.h"
 
 
 #define SZ      64
@@ -21,7 +22,8 @@ typedef enum
     FREE,
     MALLOC_LOADED,
     FREE_LOADED,
-    MEMWALK
+    MEMWALK,
+    MATMUL
 } malloc_op_e;
 
 
@@ -60,6 +62,11 @@ void allocbench_run(void)
     telemetry_name(
         MEMWALK,
         "mem_walk_8k"
+    );
+
+    telemetry_name(
+        MATMUL,
+        "matmul_32"
     );
 
 
@@ -183,6 +190,16 @@ void allocbench_run(void)
     kFree((void*)buf);
 
     heap_destroy();
+
+
+    /* ---------------------------------------------------------------------
+     * Compute cost (matmul_32) -- the third benchmark. Its own heap_init/
+     * heap_destroy; leaves the heap destroyed, same as the blocks above.
+     * ------------------------------------------------------------------------- */
+
+    compute_bench(MATMUL);
+
+
     telemetry_done();
 
 

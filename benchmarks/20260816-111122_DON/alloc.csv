@@ -1,0 +1,7 @@
+op,count,mean_cyc,min_cyc,max_cyc
+malloc,512,2371,2278,2754
+free,512,2241,2212,3284
+malloc_loaded,512,2325,2178,2534
+free_loaded,512,2241,2222,2246
+mem_walk_8k,64,7650,7394,23660
+matmul_32,8,438504,438389,439311

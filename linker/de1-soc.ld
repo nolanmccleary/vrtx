@@ -68,7 +68,7 @@ SECTIONS
         _fault_start = .;
         KEEP(*(.fault))               /* g_fault */
 
-        . = ALIGN(4);
+        . = ALIGN(0x1000);          /* host_shared gets its own special 4kb uncached page */
         _host_shared_end = .;
     } > OCRAM
 
@@ -77,28 +77,26 @@ SECTIONS
 
 
     /* ---------------------------------------------------------------------
-     * Exception vectors (32-byte aligned for VBAR)
+     * Program image: vectors + code + rodata.
+     *
+     * 4 KB-aligned and page-padded so the MMU L2 table for section 0xFFF can mark
+     * exactly these pages Normal-cacheable (I-cache) while GIC/timer, host_shared,
+     * and the data pages below stay Device. Vectors go first; _itext_start is
+     * 4 KB-aligned so VBAR's 32-byte requirement is trivially met.
      * --------------------------------------------------------------------- */
 
-    ._vectors ALIGN(32) :
+    .itext ALIGN(0x1000) :
     {
+        _itext_start = .;
+
         KEEP(*(._vectors))
-
         . = ALIGN(4);
-    } > OCRAM
 
-
-
-    /* ---------------------------------------------------------------------
-     * Program image
-     * --------------------------------------------------------------------- */
-
-    .text :
-    {
         *(.text*)
         *(.rodata*)
 
-        . = ALIGN(4);
+        . = ALIGN(0x1000);
+        _itext_end = .;
     } > OCRAM
 
 
@@ -107,7 +105,7 @@ SECTIONS
      * Initialized data
      * --------------------------------------------------------------------- */
 
-    .data :
+    .data ALIGN(0x1000) :
     {
         _data_start = .;
 

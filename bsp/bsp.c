@@ -76,6 +76,23 @@ static void mmu_cache_init(void)
     for (int i = 4095; i >= 0; i--)
         ttb[i] = ((uint32_t)i << 20) | (i < 1024 ? 0x15DE6u : 0x0DE2u);
 
+#if ENABLE_ICACHE                                   //Keep GIC and other MMIO + JTAG read targets uncached, requires 2 level translation for more page granularity
+    extern uint32_t _itext_start, _itext_end;
+    uint32_t itext_lo = (uint32_t)&_itext_start;
+    uint32_t itext_hi = (uint32_t)&_itext_end;
+
+    volatile uint32_t *l2 = (volatile uint32_t *)0x00104000u;   /* just past the 16 KB L1 table */
+    for (int p = 0; p < 256; p++)
+    {
+        uint32_t va = 0xFFF00000u + ((uint32_t)p << 12);
+        int cache = (va >= itext_lo && va < itext_hi);
+        l2[p] = va | (cache ? 0x576u : 0x032u);
+    }
+
+    /* L1[0xFFF] -> page-table descriptor (bits[1:0]=01) at the L2 base, domain 15. */
+    ttb[0xFFF] = 0x00104000u | (15u << 5) | 0x1u;
+#endif
+
     uint32_t ttbr = 0x00100000u;
     uint32_t dacr = 0x55555555u;
     uint32_t sctlr_bits = 0x1u;  /* M = MMU */

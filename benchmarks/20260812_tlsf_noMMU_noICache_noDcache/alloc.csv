@@ -1,5 +1,0 @@
-op,count,mean_cyc,min_cyc,max_cyc
-malloc,512,2724,2608,2924
-free,512,3145,3078,4008
-malloc_loaded,512,2641,2476,3350
-free_loaded,512,3167,3086,3362

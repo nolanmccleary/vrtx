@@ -1,0 +1,3 @@
+workload,cache_config,count,mean_cyc,min_cyc,max_cyc
+mem_walk_8k,MMU on · D on · I on,64,7583,6687,23092
+matmul_32,MMU on · D on · I on,8,357593,357573,357728
