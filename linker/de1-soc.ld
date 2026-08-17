@@ -3,11 +3,18 @@ OUTPUT_ARCH(arm)
 ENTRY(_reset_handler)
 
 
+_sdram_length = 0x40000000;   /* 1073741824 bytes (1.07e9) of HPS DDR3 */
+
+
 MEMORY
 {
-    SDRAM (rwx) : ORIGIN = 0x00000000, LENGTH = 0x40000000
+    SDRAM (rwx) : ORIGIN = 0x00000000, LENGTH = _sdram_length
     OCRAM (rwx) : ORIGIN = 0xFFFF0000, LENGTH = 64K
 }
+
+/* Base address of OCRAM, exported so bsp.c derives its L1 block index from the map
+ * instead of hardcoding it. */
+_ocram_origin = ORIGIN(OCRAM);
 
 
 /* -------------------------------------------------------------------------
@@ -28,6 +35,25 @@ _capture_region = 0x80;
 
 SECTIONS
 {
+
+    /* ---------------------------------------------------------------------
+     * MMU translation tables: reserved, uninitialized DDR below the heap.
+     * bsp.c fills them at boot. The L1 table must be 16 KB-aligned (TTBR0
+     * requirement); the L2 table 1 KB-aligned. Sizes are entry_count x 4 bytes.
+     * --------------------------------------------------------------------- */
+
+    .mmu_tables ORIGIN(SDRAM) + 0x00100000 (NOLOAD) :
+    {
+        . = ALIGN(16K);
+        _l1_table_base = .;
+        . = . + 4096 * 4;      /* 4096 L1 entries x 4 bytes = 16384 bytes */
+
+        . = ALIGN(1K);
+        _l2_table_base = .;
+        . = . + 256 * 4;       /* 256 L2 entries x 4 bytes = 1024 bytes */
+    } > SDRAM
+
+
 
     /* ---------------------------------------------------------------------
      * SDRAM heap

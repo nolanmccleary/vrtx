@@ -63,36 +63,37 @@ void c_fiq_handler(int id)
 
 ///////////////////////////////////////////// MMU INIT /////////////////////////////
 
-/*
- * ARMv7-A short-descriptor translation tables, identity-mapped (physical == virtual).
- * The tables live in otherwise-unused SDRAM below the heap.
- */
-#define L1_TABLE_ADDR              0x00100000u   /* first-level table: 4096 x 1 MB entries (16 KB) */
-#define L2_TABLE_ADDR             0x00104000u   /* one second-level table: 256 x 4 KB entries (1 KB) */
 
-#define SECTION_ADDR_SHIFT        20u           /* 1 MB sections */
-#define PAGE_ADDR_SHIFT           12u           /* 4 KB pages    */
+// FYI I am calling Sections and Pages here L1 and L2 blocks because I think they were poorly chosen terms and this is my project so I do what I want
 
-#define TOTAL_SECTIONS            4096u          /* 4 GB / 1 MB */
-#define CACHEABLE_SDRAM_SECTIONS  1024u          /* 0x00000000..0x3FFFFFFF is the DDR heap window */
-#define PAGES_PER_SECTION         256u           /* 1 MB / 4 KB */
 
-/* Section 0xFFF (0xFFF00000..0xFFFFFFFF) packs the GIC, the global timer and the
- * 64 KB OCRAM together, so it needs 4 KB granularity to cache OCRAM code without
- * caching the MMIO next to it. */
-#define SHARED_MMIO_SECTION       0xFFFu
 
-/* Memory-type attribute bits, OR'd onto the identity base address. */
-#define SECTION_ATTR_CACHEABLE    0x15DE6u       /* Normal, write-back write-allocate, shareable */
-#define SECTION_ATTR_DEVICE       0x0DE2u        /* Strongly-ordered: MMIO + JTAG-visible RAM (uncached) */
-#define PAGE_ATTR_CACHEABLE       0x00576u       /* Normal WBWA shareable, small-page format */
-#define PAGE_ATTR_DEVICE          0x00032u       /* Strongly-ordered, small-page format */
+extern uint32_t _l1_table_base[];   /* reserved 16384-byte L1 table in DDR (16 KB-aligned) */
+extern uint32_t _l2_table_base[];   /* reserved 1024-byte  L2 table in DDR (1 KB-aligned)  */
+extern char     _sdram_length[];    /* = LENGTH(SDRAM): total DDR size in bytes */
+extern char     _ocram_origin[];    /* = ORIGIN(OCRAM): OCRAM base address      */
 
-/* An L1 entry that delegates its megabyte to a second-level table. */
-#define L1_ATTR_POINTS_TO_L2      0x1u           /* descriptor type bits [1:0] = 0b01 */
-#define L1_DOMAIN_CLIENT          (15u << 5)     /* domain 15; DACR marks every domain "client" */
 
-/* System / auxiliary control-register bits, applied together once tables are built. */
+
+#define L1_BLOCK_ADDR_SHIFT       20u                                  /* block base addr = block_index << 20 */
+#define L1_BLOCK_SIZE_BYTES       (1u << L1_BLOCK_ADDR_SHIFT)          /* 1048576 bytes per L1 block */
+#define L1_BLOCK_COUNT            (1u << (32u - L1_BLOCK_ADDR_SHIFT))  /* 4096 blocks cover the whole 4.29e9-byte space */
+
+
+#define L2_BLOCK_ADDR_SHIFT       12u                                        /* sub-block base = index << 12 */
+#define L2_BLOCK_SIZE_BYTES       (1u << L2_BLOCK_ADDR_SHIFT)                /* 4096 bytes per L2 sub-block */
+#define L2_BLOCK_COUNT            (L1_BLOCK_SIZE_BYTES / L2_BLOCK_SIZE_BYTES)/* 1048576 / 4096 = 256 sub-blocks per L1 block */
+
+
+
+#define L1_ENTRY_MAP_BLOCK_CACHEABLE  0x15DE6u  /* kind 0b10: maps its 1048576-byte block directly; Normal WBWA shareable */
+#define L1_ENTRY_MAP_BLOCK_DEVICE     0x0DE2u   /* kind 0b10: maps its block directly; Strongly-ordered (uncached) */
+#define L1_ENTRY_POINT_TO_L2          0x001E1u  /* kind 0b01: no memory type; delegates the block to an L2 table (domain 15) */
+
+/* Complete L2 sub-block entries except the address field -- OR the sub-block base on. */
+#define L2_ENTRY_MAP_SUBBLOCK_CACHEABLE  0x00576u  /* Normal WBWA shareable, small sub-block layout */
+#define L2_ENTRY_MAP_SUBBLOCK_DEVICE     0x00032u  /* Strongly-ordered,       small sub-block layout */
+
 #define SCTLR_ENABLE_MMU          0x0001u
 #define SCTLR_ENABLE_DCACHE       0x0004u
 #define SCTLR_ENABLE_ICACHE       0x1000u
@@ -103,45 +104,55 @@ void c_fiq_handler(int id)
 static void mmu_cache_init(void)
 {
 #if ENABLE_MMU
-    volatile uint32_t *l1_table = (volatile uint32_t *)L1_TABLE_ADDR;
+    volatile uint32_t *l1_table = _l1_table_base;
 
-    /* Map the DDR heap window cacheable and everything else (peripherals + OCRAM)
-       as strongly-ordered device memory. */
-    for (uint32_t section = 0; section < TOTAL_SECTIONS; section++)
+    uint32_t sdram_block_count = (uint32_t)(uintptr_t)_sdram_length / L1_BLOCK_SIZE_BYTES;
+
+#if ENABLE_ICACHE
+    uint32_t delegated_block = (uint32_t)(uintptr_t)_ocram_origin >> L1_BLOCK_ADDR_SHIFT;
+#endif
+
+    /* Map each block directly: SDRAM blocks cacheable, every other block device. */
+    for (uint32_t l1_block = 0; l1_block < L1_BLOCK_COUNT; l1_block++)
     {
-        uint32_t section_base = section << SECTION_ADDR_SHIFT;
-        uint32_t attributes   = (section < CACHEABLE_SDRAM_SECTIONS)
-                              ? SECTION_ATTR_CACHEABLE
-                              : SECTION_ATTR_DEVICE;
 
-        l1_table[section] = section_base | attributes;
+#if ENABLE_ICACHE
+        if (l1_block == delegated_block)
+            continue;                 /* handled by the L2 delegation below, not here */
+#endif
+
+        uint32_t l1_block_base = l1_block << L1_BLOCK_ADDR_SHIFT;
+        uint32_t l1_entry      = (l1_block < sdram_block_count) ? L1_ENTRY_MAP_BLOCK_CACHEABLE : L1_ENTRY_MAP_BLOCK_DEVICE;
+        l1_table[l1_block] = l1_block_base | l1_entry;
     }
 
 #if ENABLE_ICACHE
-    /* Split the shared MMIO/OCRAM megabyte into 4 KB pages: mark only the OCRAM
-       code range [_itext_start, _itext_end) cacheable so the I-cache can hold it;
-       the GIC, the timer, and the JTAG-visible data pages stay device. */
+    /* Fill the L2 table for the delegated block: the OCRAM code range
+       [_itext_start, _itext_end) is cacheable (so the I-cache can hold it); the GIC, the
+       timer, and the JTAG-visible data sub-blocks are device. This L2 table is the SOLE
+       source of memory type for that block. */
     extern uint32_t _itext_start;
     extern uint32_t _itext_end;
     uint32_t code_start = (uint32_t)&_itext_start;
     uint32_t code_end   = (uint32_t)&_itext_end;
 
-    volatile uint32_t *l2_table = (volatile uint32_t *)L2_TABLE_ADDR;
+    volatile uint32_t *l2_table = _l2_table_base;
 
-    for (uint32_t page = 0; page < PAGES_PER_SECTION; page++)
+    for (uint32_t l2_block = 0; l2_block < L2_BLOCK_COUNT; l2_block++)
     {
-        uint32_t page_base    = (SHARED_MMIO_SECTION << SECTION_ADDR_SHIFT)
-                              + (page << PAGE_ADDR_SHIFT);
-        int      is_code_page = (page_base >= code_start) && (page_base < code_end);
-        uint32_t attributes   = is_code_page ? PAGE_ATTR_CACHEABLE : PAGE_ATTR_DEVICE;
+        uint32_t l2_block_base = (delegated_block << L1_BLOCK_ADDR_SHIFT)
+                               + (l2_block << L2_BLOCK_ADDR_SHIFT);
+        int      is_code_block = (l2_block_base >= code_start) && (l2_block_base < code_end);
+        uint32_t l2_entry      = is_code_block ? L2_ENTRY_MAP_SUBBLOCK_CACHEABLE
+                                               : L2_ENTRY_MAP_SUBBLOCK_DEVICE;
 
-        l2_table[page] = page_base | attributes;
+        l2_table[l2_block] = l2_block_base | l2_entry;
     }
 
-    l1_table[SHARED_MMIO_SECTION] = L2_TABLE_ADDR | L1_DOMAIN_CLIENT | L1_ATTR_POINTS_TO_L2;
+    l1_table[delegated_block] = (uint32_t)(uintptr_t)_l2_table_base | L1_ENTRY_POINT_TO_L2;
 #endif
 
-    uint32_t ttbr0          = L1_TABLE_ADDR;
+    uint32_t ttbr0          = (uint32_t)(uintptr_t)_l1_table_base;
     uint32_t dacr           = DACR_ALL_DOMAINS_CLIENT;
     uint32_t smp_bit        = ACTLR_ENABLE_SMP;
     uint32_t sctlr_enables  = SCTLR_ENABLE_MMU;
@@ -211,7 +222,7 @@ void bsp_gic_init(void)
 
 
 
-static void bsp_early_init(void)
+static void bsp_memory_and_cache_init(void)
 {
 #if DISABLE_WDT
     /* Hold the L4 watchdogs in reset so no hang/fault ever resets the HPS (which
@@ -237,7 +248,7 @@ static void bsp_early_init(void)
 
 void c_startup(void)
 {
-    bsp_early_init();
+    bsp_memory_and_cache_init();
     bsp_gic_init();
     bsp_timer_start();
     heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
