@@ -224,6 +224,9 @@ void bsp_gic_init(void)
 
 static void bsp_memory_and_cache_init(void)
 {
+    /* CPU1 is held in reset as the very first thing in _reset_handler (bsp/startup.s),
+       before any of this runs -- see the RSTMGR_MPUMODRST write there. */
+
 #if DISABLE_WDT
     /* Hold the L4 watchdogs in reset so no hang/fault ever resets the HPS (which
        drops the JTAG-DP and wedges the USB-Blaster). Dev-only; see Makefile. */

@@ -18,6 +18,11 @@
 .equ GICC_IAR,   0xFFFEC10C    @; GICC_BASE + 0x00C
 .equ GICC_EOIR,  0xFFFEC110    @; GICC_BASE + 0x010
 
+@; Reset Manager MPU module reset (must match RSTMGR_MPUMODRST / _CPU1 in bsp/boot.h).
+@; Bit 0 = core 0 (THIS core) -- only ever RMW bit 1; never blanket-write this register.
+.equ RSTMGR_MPUMODRST,      0xFFD05010
+.equ RSTMGR_MPUMODRST_CPU1, 0x2
+
 
 
 .global _vectors
@@ -36,6 +41,12 @@ _vectors:
 
 
 _reset_handler:
+    ldr r0, =RSTMGR_MPUMODRST @; Ensure CPU1 is in reset mode
+    ldr r1, [r0]
+    orr r1, r1, #RSTMGR_MPUMODRST_CPU1
+    str r1, [r0]
+    dsb
+
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
 

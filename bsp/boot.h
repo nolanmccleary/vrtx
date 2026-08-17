@@ -134,6 +134,9 @@
 
 /* Reset Manager: 0xFFD05000 */
 #define RSTMGR_BASE             0xFFD05000U
+#define RSTMGR_MPUMODRST        (*(volatile uint32_t*)(RSTMGR_BASE + 0x10U))
+#define RSTMGR_MPUMODRST_CPU1   (1U << 1)   /* MPU core 1 reset. NOTE: bit 0 is core 0 (this core) --
+                                               only ever RMW bit 1, never blanket-write this register */
 #define RSTMGR_PERMODRST        (*(volatile uint32_t*)(RSTMGR_BASE + 0x14U))
 #define RSTMGR_PERMODRST_SDR    (1U << 29)
 #define RSTMGR_PERMODRST_L4WD0  (1U << 6)   /* L4 watchdog 0 module reset */
