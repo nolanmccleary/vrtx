@@ -167,6 +167,16 @@
 /* NIC-301 L3 interconnect remap: bit 0 = mpuzero (route 0x0..SDRAM_SIZE to SDRAM) */
 #define NIC301_REMAP            (*(volatile uint32_t*)0xFF800000U)
 
+/* Cortex-A9 MPCore SCU (Snoop Control Unit) at PERIPHBASE. Keeps the two cores' L1
+ * D-caches coherent; invalidate its tag RAM then enable it before caches/coherency come
+ * on. Bit 0 = 1 ENABLES (confirmed against Linux smp_scu.c; the ARM TRM had a doc-
+ * revision ambiguity about this bit). PERIPHBASE checks out: SCU+0x1000 = GICD (0xFFFED000). */
+#define SCU_BASE                0xFFFEC000U
+#define SCU_CTRL                (*(volatile uint32_t *)(SCU_BASE + 0x00U))
+#define SCU_INVALIDATE_ALL      (*(volatile uint32_t *)(SCU_BASE + 0x0CU))
+#define SCU_CTRL_ENABLE         (1U << 0)
+#define SCU_INVALIDATE_ALL_WAYS 0xFFFFU   /* 4 ways x up to 4 CPUs */
+
 /* PL310 (L2C-310) L2 cache controller. Register offsets and the RAM-latency field
  * encoding are from the ARM L2C-310 TRM; the Cyclone V RAM latencies match the Linux
  * socfpga device tree (tag 1-1-1, data 2-1-1 cycles). aux/latency are writable only

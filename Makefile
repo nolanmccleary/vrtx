@@ -55,6 +55,7 @@ ENABLE_MMU    ?= 1
 ENABLE_DCACHE ?= 1
 ENABLE_ICACHE ?= 1
 ENABLE_L2     ?= 1   # PL310 outer (L2) cache; requires ENABLE_MMU
+ENABLE_SMP    ?= 1   # enable the MPCore SCU (L1 D-cache coherency); requires ENABLE_MMU
 
 # Dev convenience: hold the L4 watchdog in reset at boot so a hang/fault never
 # resets the HPS (which drops the JTAG-DP and wedges the USB-Blaster). Set to 0
@@ -78,6 +79,7 @@ CFLAGS := \
 	-DENABLE_DCACHE=$(ENABLE_DCACHE) \
 	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) \
+	-DENABLE_SMP=$(ENABLE_SMP) \
 	-DDISABLE_WDT=$(DISABLE_WDT)
 
 
@@ -88,7 +90,8 @@ LDFLAGS := \
 	-Wl,--defsym=_cfg_enable_mmu=$(ENABLE_MMU) \
 	-Wl,--defsym=_cfg_enable_dcache=$(ENABLE_DCACHE) \
 	-Wl,--defsym=_cfg_enable_icache=$(ENABLE_ICACHE) \
-	-Wl,--defsym=_cfg_enable_l2=$(ENABLE_L2)
+	-Wl,--defsym=_cfg_enable_l2=$(ENABLE_L2) \
+	-Wl,--defsym=_cfg_enable_smp=$(ENABLE_SMP)
 
 
 LIBGCC := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)

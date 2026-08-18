@@ -14,6 +14,10 @@
 #error ENABLE_L2 requires ENABLE_MMU (L2 only caches MMU-marked outer-cacheable memory)
 #endif
 
+#if ENABLE_SMP && !ENABLE_MMU
+#error ENABLE_SMP requires ENABLE_MMU (SCU coherency is over cacheable memory)
+#endif
+
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
 #define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
@@ -33,9 +37,6 @@
 
 
 /////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
-
-/* Synchronous faults (undef/swi/prefetch/data abort) are handled entirely in
-   bsp/startup.s -> bench/fault.c now (fault_capture + fault_halt); no C handler. */
 
 
 void c_irq_handler(int id)
@@ -65,12 +66,23 @@ void c_fiq_handler(int id)
 }
 
 
+///////////////////////////////////////////// SCU INIT //////////////////////////////
+
+#if ENABLE_SMP
+
+static void scu_init(void)
+{
+    SCU_INVALIDATE_ALL = SCU_INVALIDATE_ALL_WAYS;
+    SCU_CTRL |= SCU_CTRL_ENABLE;
+    __asm__ volatile ("dsb" ::: "memory");
+}
+#endif
+
+
 ///////////////////////////////////////////// L2 (PL310) INIT ///////////////////////
 
 #if ENABLE_L2
-/* Bring up the PL310 outer (L2) cache. Runs before mmu_cache_init() so the outer cache
- * is ready before the MMU + L1 turn on. Address filter (routes the DDR window to the M1
- * master port) is programmed separately in bsp_memory_and_cache_init(). */
+
 static void l2_cache_init(void)
 {
     /* Deterministic start: if L2 is already enabled (a JTAG re-vector is not a real
@@ -285,6 +297,10 @@ static void bsp_memory_and_cache_init(void)
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
     NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now
+#endif
+
+#if ENABLE_SMP
+    scu_init();        /* enable SCU coherency before caches/ACTLR.SMP come on */
 #endif
 
 #if ENABLE_L2

@@ -227,7 +227,8 @@ def elf_cache_config(elf: Path) -> str:
         f"MMU {onoff('_cfg_enable_mmu')} · "
         f"D {onoff('_cfg_enable_dcache')} · "
         f"I {onoff('_cfg_enable_icache')} · "
-        f"L2 {onoff('_cfg_enable_l2')}"
+        f"L2 {onoff('_cfg_enable_l2')} · "
+        f"SMP {onoff('_cfg_enable_smp')}"
     )
 
 
