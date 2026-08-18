@@ -34,7 +34,7 @@ RESULTS_DIR = ROOT / "test_results"
 EDF_SECONDS = 12.0
 
 EDF_TASKS = 3
-ALLOC_METRICS = 6   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, matmul_32
+ALLOC_METRICS = 7   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, mem_walk_256k, matmul_32
 
 TRACE_TICKS = 2400         # g_sched_trace capacity (must match workload_edf.c); 4 hyperperiods (lcm(40,60,100)=600)
 GANTT_WINDOW = 720         # ticks shown in the Gantt -- 3x the original 240 (>1 hyperperiod), rest of the 2400-tick capture is unshown
@@ -226,7 +226,8 @@ def elf_cache_config(elf: Path) -> str:
     return (
         f"MMU {onoff('_cfg_enable_mmu')} · "
         f"D {onoff('_cfg_enable_dcache')} · "
-        f"I {onoff('_cfg_enable_icache')}"
+        f"I {onoff('_cfg_enable_icache')} · "
+        f"L2 {onoff('_cfg_enable_l2')}"
     )
 
 
@@ -870,7 +871,7 @@ def write_cache_csv(
             ]
         )
 
-        for name in ("mem_walk_8k", "matmul_32"):
+        for name in ("mem_walk_8k", "mem_walk_256k", "matmul_32"):
 
             metric = by_name.get(name)
 
@@ -1036,32 +1037,45 @@ def plot_cache(
     path: Path,
 ) -> None:
     """Cache-sensitive workloads, kept off the allocator chart because their
-    cycle scale is 10-200x larger. Each figure is a permanent record of ONE
-    cache configuration (stamped in the title via elf_cache_config); compare
-    configs by running the battery twice and setting the two figures side by
-    side. mem_walk_8k is shown as cold (pass 0 fill) vs warm (steady hits): a
-    tall gap means the D-cache is live, a flat pair means it isn't."""
+    cycle scale is orders of magnitude larger. Each figure is a permanent record
+    of ONE cache configuration (stamped in the title via elf_cache_config,
+    including L2); compare configs by running the battery twice and setting the
+    figures side by side. The memory walks are shown as cold (pass-0 fill) vs
+    warm (steady) per pass: the 8 KB set fits L1 (probes the D-cache), the 256 KB
+    set exceeds L1 but fits L2 (probes L2 -- warm cost drops only if L2 is live).
+    Log y-axis because 8 KB (~1e4 cyc) and 256 KB (~1e6 cyc) differ ~100x."""
 
     by_name = {m.name: m for m in metrics}
-    memwalk = by_name.get("mem_walk_8k")
     matmul = by_name.get("matmul_32")
 
     fig, (ax_mw, ax_mm) = plt.subplots(
         1, 2, figsize=(9, 4)
     )
 
-    if memwalk is not None:
-        ax_mw.bar(
-            ["cold\n(pass 0)", "warm\n(steady)"],
-            [memwalk.maximum, memwalk.minimum],
-            color=["#c0504d", "#4f81bd"],
-        )
-        ax_mw.set_title(
-            f"{memwalk.name}: SDRAM RMW / 8 KB pass"
-        )
+    # Grouped cold/warm bars for the two working-set sizes, 256 KB next to 8 KB.
+    xs, heights, colors, tick_pos, tick_lbl = [], [], [], [], []
+    x = 0.0
+    for size_label, metric_name in (("8 KB", "mem_walk_8k"),
+                                    ("256 KB", "mem_walk_256k")):
+        m = by_name.get(metric_name)
+        if m is None:
+            continue
+        xs += [x, x + 1.0]
+        heights += [m.maximum, m.minimum]        # cold = max pass, warm = min pass
+        colors += ["#c0504d", "#4f81bd"]
+        tick_pos += [x, x + 1.0]
+        tick_lbl += [f"{size_label}\ncold", f"{size_label}\nwarm"]
+        x += 2.7                                  # gap before the next size group
 
-    ax_mw.set_ylabel("cycles")
-    ax_mw.grid(axis="y", alpha=0.3)
+    if xs:
+        ax_mw.bar(xs, heights, width=0.8, color=colors)
+        ax_mw.set_yscale("log")
+        ax_mw.set_xticks(tick_pos)
+        ax_mw.set_xticklabels(tick_lbl, fontsize=8)
+        ax_mw.set_title("SDRAM RMW / pass: cold vs warm")
+
+    ax_mw.set_ylabel("cycles (log)")
+    ax_mw.grid(axis="y", alpha=0.3, which="both")
 
     if matmul is not None:
         ax_mm.bar(

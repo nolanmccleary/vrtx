@@ -12,8 +12,10 @@
 #define K       64
 #define ITERS   512
 
-#define WSET_WORDS  2048   /* 8 KB working set -- fits in the A9 32 KB L1 D-cache */
-#define WALK_PASSES 64
+#define WSET_WORDS     2048    /* 8 KB working set -- fits in the A9 32 KB L1 D-cache */
+#define WALK_PASSES    64
+#define WSET256_WORDS  65536   /* 256 KB -- exceeds the 32 KB L1, fits the 512 KB L2 */
+#define WALK256_PASSES 16      /* fewer passes: 256 KB is 32x the per-pass work of 8 KB */
 
 
 typedef enum
@@ -23,11 +25,47 @@ typedef enum
     MALLOC_LOADED,
     FREE_LOADED,
     MEMWALK,
+    MEMWALK256,
     MATMUL
 } malloc_op_e;
 
 
 static void* load[K];
+
+
+/* One read-modify-write sweep over a heap buffer of `words` uint32, `passes` times,
+ * timing each pass into metric[slot]. Its own heap_init/heap_destroy (leaves the heap
+ * destroyed). noinline so the 8 KB and 256 KB callers share ONE copy -- OCRAM is tight.
+ * Uncached SDRAM -> every access hits DDR (flat). Cacheable + a cache big enough for the
+ * working set -> pass 0 cold-fills, later passes hit cache (fast); the gap is the win. */
+__attribute__((noinline))
+static void mem_walk(int slot, int words, int passes)
+{
+    heap_init();
+
+    volatile uint32_t* buf = (volatile uint32_t*)kMalloc(words * sizeof(uint32_t));
+
+    for (int i = 0; i < words; i++)   /* untimed init */
+    {
+        buf[i] = (uint32_t)i;
+    }
+
+    for (int pass = 0; pass < passes; pass++)
+    {
+        MEASURE_BEGIN(slot);
+
+        for (int i = 0; i < words; i++)
+        {
+            buf[i] += 1u;
+        }
+
+        MEASURE_END(slot);
+    }
+
+    kFree((void*)buf);
+
+    heap_destroy();
+}
 
 
 void allocbench_run(void)
@@ -62,6 +100,11 @@ void allocbench_run(void)
     telemetry_name(
         MEMWALK,
         "mem_walk_8k"
+    );
+
+    telemetry_name(
+        MEMWALK256,
+        "mem_walk_256k"
     );
 
     telemetry_name(
@@ -156,40 +199,14 @@ void allocbench_run(void)
 
 
     /* ---------------------------------------------------------------------
-     * SDRAM access cost (mem_walk_8k)
-     *
-     * Read-modify-write an 8 KB heap buffer, WALK_PASSES times, one pass per
-     * sample. Uncached SDRAM -> every access hits DDR (slow, flat). With the heap
-     * marked cacheable (mmu_cache_init) + D-cache on, the buffer fits in L1, so
-     * pass 0 is a cold fill and every pass after is L1 hits (fast). The gap is the
-     * cache win -- this is the metric that makes the D-cache visible.
+     * SDRAM access cost -- two working-set sizes, one helper (mem_walk, above).
+     *   8 KB   fits the 32 KB L1  -> probes the D-cache (cold fill vs warm L1 hits).
+     *   256 KB exceeds L1, fits the 512 KB L2 -> probes the L2 (warm cost drops only
+     *          if L2 is live). This is the metric the L2 cache actually earns.
      * ------------------------------------------------------------------------- */
 
-    heap_init();
-
-    volatile uint32_t* buf =
-        (volatile uint32_t*)kMalloc(WSET_WORDS * sizeof(uint32_t));
-
-    for (int i = 0; i < WSET_WORDS; i++)   /* untimed init */
-    {
-        buf[i] = (uint32_t)i;
-    }
-
-    for (int pass = 0; pass < WALK_PASSES; pass++)
-    {
-        MEASURE_BEGIN(MEMWALK);
-
-        for (int i = 0; i < WSET_WORDS; i++)
-        {
-            buf[i] += 1u;
-        }
-
-        MEASURE_END(MEMWALK);
-    }
-
-    kFree((void*)buf);
-
-    heap_destroy();
+    mem_walk(MEMWALK,    WSET_WORDS,    WALK_PASSES);
+    mem_walk(MEMWALK256, WSET256_WORDS, WALK256_PASSES);
 
 
     /* ---------------------------------------------------------------------

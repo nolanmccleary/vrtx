@@ -10,6 +10,10 @@
 #error ENABLE_DCACHE requires ENABLE_MMU
 #endif
 
+#if ENABLE_L2 && !ENABLE_MMU
+#error ENABLE_L2 requires ENABLE_MMU (L2 only caches MMU-marked outer-cacheable memory)
+#endif
+
 
 #define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
 #define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
@@ -59,6 +63,45 @@ void c_fiq_handler(int id)
     FLAG_WRITE(VECTOR_FLAG, 0x1C);
     (void)id;
 }
+
+
+///////////////////////////////////////////// L2 (PL310) INIT ///////////////////////
+
+#if ENABLE_L2
+/* Bring up the PL310 outer (L2) cache. Runs before mmu_cache_init() so the outer cache
+ * is ready before the MMU + L1 turn on. Address filter (routes the DDR window to the M1
+ * master port) is programmed separately in bsp_memory_and_cache_init(). */
+static void l2_cache_init(void)
+{
+    /* Deterministic start: if L2 is already enabled (a JTAG re-vector is not a real
+       reset, so it can persist from a prior run), clean+invalidate every way and
+       disable it -- aux/latency are writable only while the cache is disabled. */
+    if (PL310_CTRL & PL310_CTRL_ENABLE)
+    {
+        PL310_CLEAN_INV_WAY = PL310_ALL_WAYS;
+        while (PL310_CLEAN_INV_WAY & PL310_ALL_WAYS) { }
+        PL310_CTRL = 0u;
+    }
+
+    PL310_TAG_LATENCY  = PL310_TAG_LATENCY_VAL;    /* tag  1/1/1 cycles  */
+    PL310_DATA_LATENCY = PL310_DATA_LATENCY_VAL;   /* data 2/1/1 cycles  */
+
+    /* Keep the reset aux value's RTL-fixed geometry (8-way, 64 KB/way) and add:
+       shared-override (so our SHAREABLE SDRAM is cached in L2 at all -- the same trap
+       as ACTLR.SMP for L1), round-robin replacement, and data + instruction prefetch. */
+    PL310_AUX_CTRL |= PL310_AUX_SHARED_OVERRIDE
+                    | PL310_AUX_REPLACE_ROUNDROBIN
+                    | PL310_AUX_DATA_PREFETCH
+                    | PL310_AUX_INSTR_PREFETCH;
+
+    /* L2 RAM is garbage at power-on: invalidate all ways, wait for completion, enable. */
+    PL310_INV_WAY = PL310_ALL_WAYS;
+    while (PL310_INV_WAY & PL310_ALL_WAYS) { }
+
+    PL310_CTRL = PL310_CTRL_ENABLE;
+    __asm__ volatile ("dsb" ::: "memory");
+}
+#endif
 
 
 ///////////////////////////////////////////// MMU INIT /////////////////////////////
@@ -241,8 +284,13 @@ static void bsp_memory_and_cache_init(void)
     FLAG_WRITE(SDRAM_TEST_RESULT, cal);
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
     PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
-    NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now 
+    NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now
 #endif
+
+#if ENABLE_L2
+    l2_cache_init();   /* enable the outer (L2) cache before the MMU + L1 come on */
+#endif
+
     mmu_cache_init();
     FLAG_WRITE(GENERAL_FLAG, 0xBB01);
 }

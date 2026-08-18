@@ -167,10 +167,33 @@
 /* NIC-301 L3 interconnect remap: bit 0 = mpuzero (route 0x0..SDRAM_SIZE to SDRAM) */
 #define NIC301_REMAP            (*(volatile uint32_t*)0xFF800000U)
 
-/* PL310 L2 cache controller (routes 0x0..filter_end to M1 = SDRAM AXI port) */
+/* PL310 (L2C-310) L2 cache controller. Register offsets and the RAM-latency field
+ * encoding are from the ARM L2C-310 TRM; the Cyclone V RAM latencies match the Linux
+ * socfpga device tree (tag 1-1-1, data 2-1-1 cycles). aux/latency are writable only
+ * while the cache is disabled. */
 #define PL310_BASE              0xFFFEF000U
+#define PL310_CTRL              (*(volatile uint32_t *)(PL310_BASE + 0x100U))
+#define PL310_AUX_CTRL          (*(volatile uint32_t *)(PL310_BASE + 0x104U))
+#define PL310_TAG_LATENCY       (*(volatile uint32_t *)(PL310_BASE + 0x108U))
+#define PL310_DATA_LATENCY      (*(volatile uint32_t *)(PL310_BASE + 0x10CU))
+#define PL310_INV_WAY           (*(volatile uint32_t *)(PL310_BASE + 0x77CU))
+#define PL310_CLEAN_INV_WAY     (*(volatile uint32_t *)(PL310_BASE + 0x7FCU))
 #define PL310_FILTER_START      (*(volatile uint32_t *)(PL310_BASE + 0xC00U))
 #define PL310_FILTER_END        (*(volatile uint32_t *)(PL310_BASE + 0xC04U))
+
+#define PL310_CTRL_ENABLE           (1U << 0)
+#define PL310_AUX_SHARED_OVERRIDE   (1U << 22)  /* cache SHAREABLE memory in L2 (else it isn't) */
+#define PL310_AUX_REPLACE_ROUNDROBIN (1U << 25) /* 0 = pseudo-random, 1 = round-robin */
+#define PL310_AUX_DATA_PREFETCH     (1U << 28)
+#define PL310_AUX_INSTR_PREFETCH    (1U << 29)
+
+/* Cyclone V L2 is 8-way, so 8 way-mask bits for the by-way maintenance ops. */
+#define PL310_ALL_WAYS          0xFFU
+
+/* Tag RAM 1/1/1 and Data RAM read=2,write=1,setup=1 cycles. Field = (cycles - 1),
+ * setup at [2:0], read at [6:4], write at [10:8]. */
+#define PL310_TAG_LATENCY_VAL   0x00000000U
+#define PL310_DATA_LATENCY_VAL  0x00000010U
 
 void pll_init(void);
 void scan_mgr_init(void);
