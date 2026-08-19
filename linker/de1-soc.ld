@@ -97,10 +97,6 @@ SECTIONS
 
     .host_shared ORIGIN(OCRAM) (NOLOAD) :
     {
-        _status_base = .;
-        . = . + _capture_region;      /* status/flag words at OCRAM origin */
-
-        . = ALIGN(8);
         _telemetry_start = .;
         KEEP(*(.telemetry))           /* g_telemetry */
         . = ALIGN(8);

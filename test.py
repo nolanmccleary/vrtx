@@ -45,25 +45,33 @@ COMFORTABLE_U = 700        # always plot this well-under-capacity trial as a bas
 # Target telemetry ABI
 # =============================================================================
 
-# telemetry_t:
+# g_metrics[]: bench/telemetry.h metric_t -- one cycle distribution per slot,
+# no header, no embedded name (slot -> name is by enum order, ALLOC_NAMES below):
 #
-#     uint32_t running;
-#     uint32_t read_overhead;
-#     metric_t metric[];
-#
-# metric_t:
-#
-#     char     name[16];
-#     uint64_t count;
-#     uint64_t sum;
 #     uint32_t min;
 #     uint32_t max;
-
-TELEMETRY_HEADER = struct.Struct("<II")
-METRIC_STRUCT = struct.Struct("<16sQQII")
-
-TELEMETRY_HEADER_SIZE = TELEMETRY_HEADER.size
+#     uint32_t sum;      # mean = sum / count
+#     uint32_t count;
+METRIC_STRUCT = struct.Struct("<IIII")
 METRIC_SIZE = METRIC_STRUCT.size
+
+# allocbench slot order (malloc_op_e in workload_allocbench.c)
+ALLOC_NAMES = [
+    "malloc",
+    "free",
+    "malloc_loaded",
+    "free_loaded",
+    "mem_walk_8k",
+    "mem_walk_256k",
+    "matmul_32",
+]
+
+# g_edf_metrics[NTASKS]: kernel/thread.h metrics_t -- per-task, cached->mirrored
+# uncached every tick (workload_edf.c). Field order is authoritative:
+#
+#     uint32_t ci, ci_av, prev_cycles, delta_sum, ti, ti_av, t0;
+EDF_METRIC_STRUCT = struct.Struct("<7I")
+EDF_METRIC_SIZE = EDF_METRIC_STRUCT.size
 
 
 # =============================================================================
@@ -124,11 +132,11 @@ def fault_report(words: Sequence[int]) -> str | None:
 
 @dataclass(frozen=True)
 class Metric:
-    name: str        # metric_t, telemetry_t g_telemetry
-    count: int       # metric_t, telemetry_t g_telemetry
-    total: int       # metric_t, telemetry_t g_telemetry
-    minimum: int     # metric_t, telemetry_t g_telemetry
-    maximum: int     # metric_t, telemetry_t g_telemetry
+    name: str        # slot name (ALLOC_NAMES, by enum order)
+    count: int       # metric_t.count  (g_metrics)
+    total: int       # metric_t.sum
+    minimum: int     # metric_t.min
+    maximum: int     # metric_t.max
 
     @property
     def mean(self) -> int:
@@ -149,18 +157,35 @@ class EDFResult:
     done: tuple[int, ...]       # g_edf_done
     expected: tuple[int, ...]   # gTicks, g_edf_periods
 
-    sched: Metric               # telemetry_t g_telemetry, metric_t
+    # Per-task measured metrics, mirrored from g_edf_metrics (cycles).
+    ci_av: tuple[int, ...]      # EWMA compute cycles per job
+    ti_av: tuple[int, ...]      # EWMA inter-arrival cycles (~ period)
+    ci: tuple[int, ...]         # last job's compute cycles (acute)
 
     @property
     def requested_u(self) -> float:
         return self.u_permille / 1000.0
 
     @property
-    def actual_u(self) -> float:
+    def configured_u(self) -> float:
+        # Sum C_i/T_i from g_edf_C -- what the firmware *set up* (ticks), not
+        # what it measured. Rounds to ~requested_u; NOT a measurement.
         return sum(
             c / period
             for c, period in zip(self.c, self.periods)
         )
+
+    @property
+    def measured_u_per_task(self) -> tuple[float, ...]:
+        # True per-task utilization from real CPU time: ci_av / ti_av.
+        return tuple(
+            (ci / ti) if ti else 0.0
+            for ci, ti in zip(self.ci_av, self.ti_av)
+        )
+
+    @property
+    def measured_u(self) -> float:
+        return sum(self.measured_u_per_task)
 
 
 
@@ -607,33 +632,21 @@ class OCD:
 
 def read_metric(
     ocd: OCD,
-    telemetry_base: int,
+    metrics_base: int,
     index: int,
 ) -> Metric:
 
-    addr = (
-        telemetry_base
-        + TELEMETRY_HEADER_SIZE
-        + index * METRIC_SIZE
-    )
-
     raw = ocd.read_bytes(
-        addr,
+        metrics_base + index * METRIC_SIZE,
         METRIC_SIZE,
     )
 
-    (
-        raw_name,
-        count,
-        total,
-        minimum,
-        maximum,
-    ) = METRIC_STRUCT.unpack(raw)
+    minimum, maximum, total, count = METRIC_STRUCT.unpack(raw)
 
     name = (
-        raw_name
-        .split(b"\0", 1)[0]
-        .decode(errors="replace")
+        ALLOC_NAMES[index]
+        if index < len(ALLOC_NAMES)
+        else f"metric_{index}"
     )
 
     return Metric(
@@ -718,11 +731,21 @@ def collect_edf_trial(
         for period in periods
     )
 
-    sched = read_metric(
-        ocd,
-        symbols["g_telemetry"],
-        0,
+    # Per-task metrics mirror (g_edf_metrics[NTASKS], metrics_t). Uncached, so
+    # this halted phys read is coherent with the tick-by-tick CPU writes.
+    raw = ocd.read_bytes(
+        symbols["g_edf_metrics"],
+        len(periods) * EDF_METRIC_SIZE,
     )
+
+    mets = [
+        EDF_METRIC_STRUCT.unpack_from(raw, i * EDF_METRIC_SIZE)
+        for i in range(len(periods))
+    ]
+
+    ci    = tuple(m[0] for m in mets)   # metrics_t.ci
+    ci_av = tuple(m[1] for m in mets)   # metrics_t.ci_av
+    ti_av = tuple(m[5] for m in mets)   # metrics_t.ti_av
 
     return EDFResult(
         index=ocd.read_u32(
@@ -744,7 +767,9 @@ def collect_edf_trial(
         done=done,
         expected=expected,
 
-        sched=sched,
+        ci_av=ci_av,
+        ti_av=ti_av,
+        ci=ci,
     )
 
 
@@ -780,11 +805,11 @@ def print_edf_header() -> None:
 
     print(
         f"{'reqU':>6} "
-        f"{'actU':>6} "
+        f"{'cfgU':>6} "
+        f"{'measU':>6} "
         f"{'ticks':>8} "
-        f"{'miss':>8} "
-        f"{'cost':>8} "
-        f"{'max':>8}"
+        f"{'miss':>8}   "
+        f"per-task measured U (ci_av/ti_av)"
     )
 
 
@@ -792,13 +817,18 @@ def print_edf_result(
     result: EDFResult,
 ) -> None:
 
+    per_task = "  ".join(
+        f"t{i}={u:.3f}"
+        for i, u in enumerate(result.measured_u_per_task)
+    )
+
     print(
         f"{result.requested_u:>6.3f} "
-        f"{result.actual_u:>6.3f} "
+        f"{result.configured_u:>6.3f} "
+        f"{result.measured_u:>6.3f} "
         f"{result.ticks:>8} "
-        f"{result.misses:>8} "
-        f"{result.sched.mean:>8} "
-        f"{result.sched.maximum:>8}"
+        f"{result.misses:>8}   "
+        f"{per_task}"
     )
 
 
@@ -906,15 +936,11 @@ def write_edf_csv(
         writer.writerow(
             [
                 "requested_u",
-                "actual_u",
+                "configured_u",
+                "measured_u",
 
                 "ticks",
                 "misses",
-
-                "sched_count",
-                "sched_mean_cyc",
-                "sched_min_cyc",
-                "sched_max_cyc",
 
                 "C0",
                 "C1",
@@ -931,6 +957,14 @@ def write_edf_csv(
                 "expected0",
                 "expected1",
                 "expected2",
+
+                "ci_av0",
+                "ci_av1",
+                "ci_av2",
+
+                "ti_av0",
+                "ti_av1",
+                "ti_av2",
             ]
         )
 
@@ -939,23 +973,19 @@ def write_edf_csv(
             writer.writerow(
                 [
                     result.requested_u,
-                    round(
-                        result.actual_u,
-                        6,
-                    ),
+                    round(result.configured_u, 6),
+                    round(result.measured_u, 6),
 
                     result.ticks,
                     result.misses,
-
-                    result.sched.count,
-                    result.sched.mean,
-                    result.sched.minimum,
-                    result.sched.maximum,
 
                     *result.c,
                     *result.periods,
                     *result.done,
                     *result.expected,
+
+                    *result.ci_av,
+                    *result.ti_av,
                 ]
             )
 
@@ -1115,20 +1145,9 @@ def plot_edf(
     path: Path,
 ) -> None:
 
-    utilization = [
-        result.actual_u
-        for result in rows
-    ]
-
-    misses = [
-        result.misses
-        for result in rows
-    ]
-
-    costs = [
-        result.sched.mean
-        for result in rows
-    ]
+    requested = [result.requested_u for result in rows]
+    misses    = [result.misses      for result in rows]
+    measured  = [result.measured_u  for result in rows]
 
     fig, (a1, a2) = plt.subplots(
         2,
@@ -1138,7 +1157,7 @@ def plot_edf(
     )
 
     a1.plot(
-        utilization,
+        requested,
         misses,
         "o-",
     )
@@ -1153,7 +1172,7 @@ def plot_edf(
     )
 
     a1.set_title(
-        "EDF schedulability and scheduler cost"
+        "EDF schedulability and measured utilization"
     )
 
     a1.grid(
@@ -1161,10 +1180,18 @@ def plot_edf(
     )
 
 
+    # Measured U (from per-task ci_av/ti_av) vs requested U. The y=x reference
+    # shows how measured tracks request and where the CPU saturates (flattens
+    # toward 1.0 once overloaded).
+    if requested:
+        lo, hi = min(requested), max(requested)
+        a2.plot([lo, hi], [lo, hi], "--", color="gray", label="y = x")
+
     a2.plot(
-        utilization,
-        costs,
+        requested,
+        measured,
         "o-",
+        label="measured",
     )
 
     a2.axvline(
@@ -1173,12 +1200,14 @@ def plot_edf(
     )
 
     a2.set_ylabel(
-        "mean scheduler cycles/tick"
+        "measured utilization"
     )
 
     a2.set_xlabel(
-        "actual utilization"
+        "requested utilization"
     )
+
+    a2.legend()
 
     a2.grid(
         alpha=0.3
@@ -1200,7 +1229,8 @@ def plot_gantt(
     periods: Sequence[int],
     path: Path,
     u_permille: int,
-    u_actual: float = 0.0,
+    u_configured: float = 0.0,
+    task_u: Sequence[float] = (),
     label: str = "",
     window: int = GANTT_WINDOW,
 ) -> None:
@@ -1239,14 +1269,24 @@ def plot_gantt(
                 arrowprops=dict(arrowstyle="->", color="black", lw=0.7),
             )
 
+    # Per-task measured U (ci_av/ti_av) annotated on each row's label.
+    def row_label(i: int) -> str:
+        base = f"$\\tau_{i}$ (T={periods[i]})"
+        if i < len(task_u):
+            base += f"\nU={task_u[i]:.3f}"
+        return base
+
+    measured_total = sum(task_u) if task_u else 0.0
+
     ax.set_yticks([nt - 1 - i + 0.5 for i in range(nt)])
-    ax.set_yticklabels([f"$\\tau_{i}$ (T={periods[i]})" for i in range(nt)])
+    ax.set_yticklabels([row_label(i) for i in range(nt)], fontsize=8)
     ax.set_ylim(0, nt)
     ax.set_xlim(0, n)
     ax.set_xlabel("time (ticks)")
     ax.set_title(
         f"EDF schedule  (Ureq={u_permille / 1000:.3f}, "
-        f"Uact={u_actual:.3f}"
+        f"Ucfg={u_configured:.3f}, "
+        f"Umeas={measured_total:.3f}"
         f"{', ' + label if label else ''}; "
         f"first {n} ticks; up-arrow = release)"
     )
@@ -1279,7 +1319,8 @@ def main() -> None:
         (
             "_reset_handler",
 
-            "g_telemetry",
+            "g_metrics",
+            "g_edf_metrics",
 
             "gTicks",
             "gMissedDeadlines",
@@ -1448,7 +1489,7 @@ def main() -> None:
 
         alloc_metrics = collect_alloc(
             ocd,
-            symbols["g_telemetry"],
+            symbols["g_metrics"],
         )
 
 
@@ -1694,7 +1735,8 @@ def main() -> None:
             periods,
             outdir / f"edf_schedule_u{u_permille / 1000:.3f}.png",
             u_permille,
-            u_actual=result_by_u[u_permille].actual_u,
+            u_configured=result_by_u[u_permille].configured_u,
+            task_u=result_by_u[u_permille].measured_u_per_task,
             label=" / ".join(gantt_labels[u_permille]),
         )
 
@@ -1715,15 +1757,16 @@ def main() -> None:
         knee = max(
             clean,
             key=lambda result:
-                result.actual_u,
+                result.configured_u,
         )
 
 
         print(
             f"\nU* = "
-            f"{knee.actual_u:.3f} "
+            f"{knee.configured_u:.3f} "
             f"(requested "
-            f"{knee.requested_u:.3f})"
+            f"{knee.requested_u:.3f}, "
+            f"measured {knee.measured_u:.3f})"
         )
 
 

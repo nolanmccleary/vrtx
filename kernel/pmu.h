@@ -3,9 +3,7 @@
 
 #include <stdint.h>
 
-/* Global timer registers (A9 MPCore private memory region). */
-#define GTIMER_CNTR_LO (*(volatile uint32_t *)0xFFFEC200)
-#define GTIMER_CNTR_HI (*(volatile uint32_t *)0xFFFEC204)
+
 
 void pmu_init(void);
 uint32_t pmu_calibrate(void);

@@ -10,11 +10,32 @@
  * test payload.
  */
 
+
+
+static void c_startup(void)
+{
+    bsp_board_init();
+    bsp_memory_and_cache_init();
+    bsp_gic_init();
+    bsp_timer_start();
+    
+    pmu_init();
+    pmu_calibrate();
+    
+    heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
+    psched_init();
+}
+
+
+
+
+
 void allocbench_run(void);
 void edf_run(void);
 
 void main(void)
 {
+    c_startup();
 #if defined(MODE_TEST)
     allocbench_run();
     edf_run();

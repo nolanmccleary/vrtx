@@ -7,75 +7,58 @@
 #include "pmu.h"
 
 
-#ifndef TELEM_METRICS
-#define TELEM_METRICS 8
-#endif
-
+/* -------------------------------------------------------------------------
+ * Host-readable metric table
+ *
+ * One cycle-count distribution (min / max / running sum / count) per slot. The
+ * table lives in the uncached .telemetry region (see linker .host_shared), so a
+ * CPU write is visible to a JTAG phys read with no cache maintenance. NOLOAD:
+ * the firmware must metric_reset() each slot before use -- power-on OCRAM is
+ * garbage, and min starts at 0xFFFFFFFF.
+ * ------------------------------------------------------------------------- */
 
 typedef struct
 {
-    char name[16];
-    uint64_t count;
-    uint64_t sum;
     uint32_t min;
     uint32_t max;
+    uint32_t sum;     /* mean = sum / count */
+    uint32_t count;
 }   metric_t;
 
 
-typedef struct
+#define METRIC_SLOTS  8   /* allocbench uses 7 (malloc..matmul); headroom for one more */
+
+
+extern metric_t g_metrics[METRIC_SLOTS];
+
+
+static inline void metric_reset(int slot)
 {
-    uint32_t running;
-    uint32_t read_overhead;
-    metric_t metric[TELEM_METRICS];
-}   telemetry_t;
-
-
-_Static_assert(sizeof(metric_t) == 40u, "metric_t layout changed");
-_Static_assert(offsetof(telemetry_t, metric) == 8u, "telemetry_t layout changed");
-
-
-extern telemetry_t g_telemetry;
-
-
-void telemetry_init(void);
-void telemetry_name(int id, const char* name);
-void telemetry_done(void);
-
-void metric_reset(metric_t* m);
-
-
-static inline void metric_update(metric_t* m, uint32_t cycles)
-{
-    m->count++;
-    m->sum += cycles;
-
-    if (cycles < m->min)
-        m->min = cycles;
-
-    if (cycles > m->max)
-        m->max = cycles;
+    g_metrics[slot].min   = 0xFFFFFFFFu;
+    g_metrics[slot].max   = 0u;
+    g_metrics[slot].sum   = 0u;
+    g_metrics[slot].count = 0u;
 }
 
 
-static inline uint32_t telem_correct(uint32_t delta)
+static inline void metric_add(int slot, uint32_t cycles)
 {
-    uint32_t overhead = g_telemetry.read_overhead;
+    metric_t* m = &g_metrics[slot];
 
-    return (delta > overhead)
-        ? (delta - overhead)
-        : 0;
+    if (cycles < m->min) m->min = cycles;
+    if (cycles > m->max) m->max = cycles;
+
+    m->sum   += cycles;
+    m->count += 1u;
 }
 
 
+/* Bracket a region; MEASURE_END folds the elapsed cycle count into slot `id`. */
 #define MEASURE_BEGIN(id) \
     uint32_t _mt_##id = pmu_cycles()
 
-
-#define MEASURE_END(id)                                            \
-    metric_update(                                                 \
-        &g_telemetry.metric[id],                                   \
-        telem_correct(pmu_cycles() - _mt_##id)                     \
-    )
+#define MEASURE_END(id) \
+    metric_add((id), pmu_cycles() - _mt_##id)
 
 
 #endif

@@ -27,7 +27,7 @@ endif
 
 CORE := \
 	main.c \
-	bsp/startup.s \
+	kernel/startup.s \
 	bsp/bsp.c \
 	bsp/boot.c \
 	bsp/sequencer.c \
@@ -35,9 +35,10 @@ CORE := \
 	kernel/preempt_sched.c \
 	kernel/deque.c \
 	kernel/min_heap.c \
+	kernel/pmu.c \
+	kernel/thread.c \
 	bench/ktrace.c \
 	bench/fault.c \
-	bench/pmu.c \
 	bench/telemetry.c \
 	bench/workload_edf.c \
 	bench/workload_allocbench.c \

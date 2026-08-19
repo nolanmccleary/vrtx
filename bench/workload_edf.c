@@ -57,6 +57,13 @@ static uint32_t trace_active;   /* 1 while a trial is running (every trial is tr
 static uint32_t iters[NTASKS];
 
 
+/* Per-task metrics mirror. The per-tick hook copies the running task's cached
+ * metrics_t here; the region is uncached (.telemetry), so a JTAG phys read at the
+ * trial halt sees fresh ci_av/ti_av with no cache maintenance -- the CPU copy reads
+ * its own fresh cache and writes memory the host reads directly. Index by task. */
+metrics_t g_edf_metrics[NTASKS] __attribute__((section(".telemetry"), used));
+
+
 
 /* -------------------------------------------------------------------------
  * Synthetic jobs
@@ -129,10 +136,23 @@ static int trace_idx(thread_t* r)
  * running task id for the traced trial only; a no-op otherwise. */
 void ktrace_edf_tick(thread_t* running)
 {
-    if (!trace_active)            return;
-    if (g_trace_len >= TRACE_TICKS) return;
+    if (!trace_active) return;
 
-    g_sched_trace[g_trace_len++] = (uint8_t)trace_idx(running);
+    int idx = trace_idx(running);
+
+    /* Gantt: bounded window (first TRACE_TICKS ticks of the trial). */
+    if (g_trace_len < TRACE_TICKS)
+    {
+        g_sched_trace[g_trace_len++] = (uint8_t)idx;
+    }
+
+    /* Metrics mirror: EVERY tick for the whole trial, so the host reads current
+     * ci_av/ti_av at the (late, ~12000-tick) halt -- must NOT be gated by the
+     * gantt cap. Idle (idx == NTASKS) has no task slot. */
+    if (idx < (int)NTASKS)
+    {
+        g_edf_metrics[idx] = running->metrics;
+    }
 }
 
 
@@ -228,21 +248,9 @@ static void reset_trial(void)
 
     for (uint32_t i = 0; i < NTASKS; i++)
     {
-        g_edf_done[i] = 0u;
+        g_edf_done[i]    = 0u;
+        g_edf_metrics[i] = (metrics_t){0};
     }
-
-
-    metric_reset(
-        &g_telemetry.metric[SM_SCHED_ALL]
-    );
-
-    metric_reset(
-        &g_telemetry.metric[SM_DISPATCH]
-    );
-
-    metric_reset(
-        &g_telemetry.metric[SM_IDLE]
-    );
 }
 
 
@@ -253,25 +261,6 @@ static void reset_trial(void)
 void edf_run(void)
 {
     pmu_init();
-    telemetry_init();
-
-    telemetry_name(
-        SM_SCHED_ALL,
-        "sched_all"
-    );
-
-    telemetry_name(
-        SM_DISPATCH,
-        "dispatch"
-    );
-
-    telemetry_name(
-        SM_IDLE,
-        "idle"
-    );
-
-
-    g_telemetry.read_overhead = pmu_calibrate();
 
     /*
      * allocbench destroyed its heap before returning.
@@ -389,7 +378,6 @@ void edf_run(void)
     }
 
 
-    telemetry_done();
     heap_reset();
 
 

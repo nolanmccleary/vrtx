@@ -152,7 +152,6 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
-    bl c_startup
     bl main
     
 

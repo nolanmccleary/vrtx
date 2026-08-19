@@ -31,13 +31,14 @@ static deque_t* incomingThreads;
 static void thread_exit()
 {
     curr_thread->thread_status = FINISHED;
+    switch_out(curr_thread);
     for (;;) {};
 }
 
 
 
 
-static inline void start_thread(thread_t* thread)
+static inline void prime_thread(thread_t* thread)
 {
     uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
 
@@ -157,6 +158,8 @@ sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodic
 
     push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
 
+    init_metrics(new_thread);
+
     handle->thread = new_thread;
 
     return SYS_OK;
@@ -227,7 +230,7 @@ inline void next_thread()
 
     if (sched_init)
     {
-        KTRACE_TICK_ENTER();
+        if (curr_thread->thread_status == RUNNING) switch_out(curr_thread);
 
         gTicks++;
 
@@ -259,8 +262,6 @@ inline void next_thread()
                 : "r"(main_thread->sp)
                 : "memory"
             );
-
-            KTRACE_TICK_EXIT();
 
             return;
         }
@@ -344,7 +345,6 @@ inline void next_thread()
 
                 curr_thread = thread;
                 thread_found = true;
-                KTRACE_SWITCH_IN(thread);
                 insert_node(deadHeap, thread, thread->deadline);
                 break;
             }
@@ -357,28 +357,29 @@ inline void next_thread()
         }
 
 
+        switch_in(curr_thread);
+
+        KTRACE_TICK_EXIT(curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
+
         switch (curr_thread->thread_status)
         {
-                case PENDING:
-                    start_thread(curr_thread);
-                    /* fall through */
+            case PENDING:
+                prime_thread(curr_thread);
+                /* fall through */
 
-                case RUNNING:
-                    __asm__ __volatile__ (
-                        "cps #0x1F\n"
-                        "mov sp, %0\n"
-                        "cps #0x13\n"
-                        :
-                        : "r"(curr_thread->sp)
-                    );
-                    break;
+            case RUNNING:
+                __asm__ __volatile__ (
+                    "cps #0x1F\n"
+                    "mov sp, %0\n"
+                    "cps #0x13\n"
+                    :
+                    : "r"(curr_thread->sp)
+                );
+                break;
 
-                default:
-                    break;
-
+            default:
+                break;
         }
-
-        KTRACE_TICK_EXIT();
     }
 }
 

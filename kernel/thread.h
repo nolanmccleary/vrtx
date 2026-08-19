@@ -8,7 +8,7 @@
 
 
 #define THREAD_STACK_SIZE 0x2000
-#define MODE_SYS          0x1F
+#define MODE_SYS          0x1F   /* CPSR mode bits forged into a new thread's SPSR (see prime_thread) */
 
 typedef enum
 {
@@ -27,7 +27,23 @@ typedef enum
 
 
 
+typedef struct
+{
+    uint32_t ci;
+    uint32_t ci_av;
+    uint32_t prev_cycles;
+    uint32_t delta_sum;
 
+    uint32_t ti;
+    uint32_t ti_av;
+    uint32_t t0;
+
+}   metrics_t;
+
+
+
+
+//TODO: Pack this better
 typedef struct __attribute__((aligned(8))) //Stack should start 8-aligned
 {
     char stack[THREAD_STACK_SIZE];
@@ -43,8 +59,16 @@ typedef struct __attribute__((aligned(8))) //Stack should start 8-aligned
     thread_status_e thread_status;
 
     sys_exit_e (*func)();
+
+    metrics_t metrics;
 }   thread_t;
 
+
+
+void init_metrics(thread_t* thread);
+
+void switch_in(thread_t* thread);
+void switch_out(thread_t* thread);
 
 
 #endif

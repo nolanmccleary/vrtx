@@ -4,7 +4,7 @@
 #include "sequencer.h"
 #include "tlsf.h"
 #include "preempt_sched.h"
-#include "ktrace.h"
+#include "pmu.h"
 
 #if ENABLE_DCACHE && !ENABLE_MMU
 #error ENABLE_DCACHE requires ENABLE_MMU
@@ -41,7 +41,6 @@
 
 void c_irq_handler(int id)
 {
-    FLAG_WRITE(VECTOR_FLAG, 0x18);
     switch(id)
     {
         case 0x1b:
@@ -49,8 +48,7 @@ void c_irq_handler(int id)
             WDT_L4 = 0x76; //Feed WDT
 #endif
             GTIMER_ISR = 1;
-            FLAG_WRITE(TICK_MIRROR, TICK_MIRROR + 1);
-            next_thread(); 
+            next_thread();
             break;
 
         default:
@@ -61,7 +59,6 @@ void c_irq_handler(int id)
 
 void c_fiq_handler(int id)
 {
-    FLAG_WRITE(VECTOR_FLAG, 0x1C);
     (void)id;
 }
 
@@ -85,9 +82,6 @@ static void scu_init(void)
 
 static void l2_cache_init(void)
 {
-    /* Deterministic start: if L2 is already enabled (a JTAG re-vector is not a real
-       reset, so it can persist from a prior run), clean+invalidate every way and
-       disable it -- aux/latency are writable only while the cache is disabled. */
     if (PL310_CTRL & PL310_CTRL_ENABLE)
     {
         PL310_CLEAN_INV_WAY = PL310_ALL_WAYS;
@@ -156,8 +150,60 @@ extern char     _ocram_origin[];    /* = ORIGIN(OCRAM): OCRAM base address      
 #define DACR_ALL_DOMAINS_CLIENT   0x55555555u
 
 
-static void mmu_cache_init(void)
+
+
+
+///////////////////////////////////////////// STARTUP /////////////////////////////
+
+
+void bsp_timer_start(void)
 {
+    GTIMER_CTRL    = 0;
+    GTIMER_ISR     = 1;
+    GTIMER_AUTOINC = 199999;
+    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
+    GTIMER_CMPH    = GTIMER_CNTRH;
+    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
+}
+
+
+void bsp_gic_init(void)
+{
+    GICD_CTLR       = 1;
+    GICD_ISENABLER0 |= (1 << 27);
+    GICC_PMR        = 0xFF;
+    GICC_CTLR       = 1;
+}
+
+
+
+void bsp_board_init(void)
+{
+#if DISABLE_WDT
+    RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
+#endif
+
+#ifdef BOARD_DE1_SOC
+    pll_init();
+    scan_mgr_init();
+    sdram_ctrl_init();
+    (void)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
+    PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
+    PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
+    NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now
+#endif
+}
+
+
+void bsp_memory_and_cache_init(void)
+{
+#if ENABLE_SMP
+    scu_init();        /* enable SCU coherency before caches/ACTLR.SMP come on */
+#endif
+
+#if ENABLE_L2
+    l2_cache_init();   /* enable the outer (L2) cache before the MMU + L1 come on */
+#endif
 #if ENABLE_MMU
     volatile uint32_t *l1_table = _l1_table_base;
 
@@ -250,74 +296,9 @@ static void mmu_cache_init(void)
         : "memory"
     );
 #endif
-}
 
-
-///////////////////////////////////////////// STARTUP /////////////////////////////
-
-
-void bsp_timer_start(void)
-{
-    GTIMER_CTRL    = 0;
-    GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 199999;
-    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
-    GTIMER_CMPH    = GTIMER_CNTRH;
-    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
-}
-
-
-void bsp_gic_init(void)
-{
-    GICD_CTLR       = 1;
-    GICD_ISENABLER0 |= (1 << 27);
-    GICC_PMR        = 0xFF;
-    GICC_CTLR       = 1;
+    (void)(0);
 }
 
 
 
-static void bsp_memory_and_cache_init(void)
-{
-    /* CPU1 is held in reset as the very first thing in _reset_handler (bsp/startup.s),
-       before any of this runs -- see the RSTMGR_MPUMODRST write there. */
-
-#if DISABLE_WDT
-    /* Hold the L4 watchdogs in reset so no hang/fault ever resets the HPS (which
-       drops the JTAG-DP and wedges the USB-Blaster). Dev-only; see Makefile. */
-    RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
-#endif
-
-#ifdef BOARD_DE1_SOC
-    pll_init();
-    scan_mgr_init();
-    sdram_ctrl_init();
-    uint32_t cal = (uint32_t)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
-    FLAG_WRITE(SDRAM_TEST_RESULT, cal);
-    PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
-    PL310_FILTER_START = 0x00000001U;  /* enable filter, start = 0x0 */
-    NIC301_REMAP       = 0;           // Clear remap because system can see sdram exists now
-#endif
-
-#if ENABLE_SMP
-    scu_init();        /* enable SCU coherency before caches/ACTLR.SMP come on */
-#endif
-
-#if ENABLE_L2
-    l2_cache_init();   /* enable the outer (L2) cache before the MMU + L1 come on */
-#endif
-
-    mmu_cache_init();
-    FLAG_WRITE(GENERAL_FLAG, 0xBB01);
-}
-
-
-
-void c_startup(void)
-{
-    bsp_memory_and_cache_init();
-    bsp_gic_init();
-    bsp_timer_start();
-    heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
-    psched_init();
-}

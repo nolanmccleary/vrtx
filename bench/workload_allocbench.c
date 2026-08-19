@@ -75,45 +75,13 @@ void allocbench_run(void)
 
     pmu_init();
 
-    telemetry_init();
-
-    telemetry_name(
-        MALLOC,
-        "malloc"
-    );
-
-    telemetry_name(
-        FREE,
-        "free"
-    );
-
-    telemetry_name(
-        MALLOC_LOADED,
-        "malloc_loaded"
-    );
-
-    telemetry_name(
-        FREE_LOADED,
-        "free_loaded"
-    );
-
-    telemetry_name(
-        MEMWALK,
-        "mem_walk_8k"
-    );
-
-    telemetry_name(
-        MEMWALK256,
-        "mem_walk_256k"
-    );
-
-    telemetry_name(
-        MATMUL,
-        "matmul_32"
-    );
-
-
-    g_telemetry.read_overhead = pmu_calibrate();
+    /* Slot -> name mapping (host knows it by enum order):
+     * malloc, free, malloc_loaded, free_loaded, mem_walk_8k, mem_walk_256k, matmul_32.
+     * NOLOAD table: reset every slot before accumulating. */
+    for (int i = 0; i < METRIC_SLOTS; i++)
+    {
+        metric_reset(i);
+    }
 
 
     /*
@@ -215,9 +183,6 @@ void allocbench_run(void)
      * ------------------------------------------------------------------------- */
 
     compute_bench(MATMUL);
-
-
-    telemetry_done();
 
 
     /*
