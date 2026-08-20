@@ -1301,7 +1301,7 @@ def plot_gantt(
 # Main
 # =============================================================================
 
-def main() -> None:
+def main(bootable: bool = False) -> None:
 
     if not TEST_ELF.exists():
         raise RuntimeError(
@@ -1347,6 +1347,11 @@ def main() -> None:
             "g_fault",
         ),
     )
+
+    # --bootable requires the BOOT_TEST gate flag, present only in a
+    # `make boot` build. Its absence means the ELF is the wrong build.
+    if bootable:
+        require_symbols(symbols, ("g_boot_release",))
 
 
     bp_alloc = (
@@ -1394,10 +1399,26 @@ def main() -> None:
         # Load exactly once
         # ---------------------------------------------------------------------
 
-        ocd.load_image(
-            TEST_ELF,
-            symbols["_reset_handler"],
-        )
+        if bootable:
+            # Board self-booted from SD; firmware is spinning at the BOOT_TEST
+            # gate. Do NOT load_image -- just attach and halt the spin.
+            ocd.halt()
+
+            # Boot progress marker (0xFFFF9000): last step the firmware reached.
+            #   reset handler 1-5 | main 6 | past gate 7 | c_startup 8-15 | done 16
+            mark = ocd.read_u32(0xFFFF9000)
+            print(
+                f"bootable: attached, PC=0x{ocd.pc():08x}, "
+                f"boot marker = {mark} (0x{mark:08x})\n"
+                f"  [1-5 reset | 6 main | 7 past-gate | 8 c_startup | "
+                f"9 bsp_board_init | 10 mmu | 11 gic | 12 timer | "
+                f"13 pmu | 14 heap | 15 psched | 16 done]\n"
+            )
+        else:
+            ocd.load_image(
+                TEST_ELF,
+                symbols["_reset_handler"],
+            )
 
 
         # ---------------------------------------------------------------------
@@ -1472,7 +1493,14 @@ def main() -> None:
 
         # ---------------------------------------------------------------------
         # Boot
+        #
+        # --bootable: release the self-boot gate (firmware spins in
+        # ktrace_wait_boot until g_boot_release != 0), then it runs c_startup()
+        # and the tests exactly as the JTAG-loaded path does.
         # ---------------------------------------------------------------------
+
+        if bootable:
+            ocd.write_u32(symbols["g_boot_release"], 1)
 
         ocd.resume()
 
@@ -1777,4 +1805,20 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="DE1-SoC RTOS test driver",
+    )
+    parser.add_argument(
+        "--bootable",
+        "--live",
+        action="store_true",
+        dest="bootable",
+        help="target self-booted from SD (built with `make boot`) and is "
+             "spinning at the BOOT_TEST gate: attach + release it instead of "
+             "load_image-ing the ELF over JTAG.",
+    )
+    args = parser.parse_args()
+
+    main(bootable=args.bootable)

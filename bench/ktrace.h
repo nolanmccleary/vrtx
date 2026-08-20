@@ -77,6 +77,33 @@ void ktrace_wait_release(void);
     (g_test_release != 0u)
 
 
+/* -------------------------------------------------------------------------
+ * Self-boot gate (BOOT_TEST builds only)
+ *
+ * When the board self-boots from SD there is no debugger present at power-on,
+ * so an OCD-programmed breakpoint can't stop it before the tests. Instead the
+ * firmware spins on g_boot_release (zeroed on entry) at the very top of main(),
+ * BEFORE c_startup(). Attach JTAG afterwards and release it by writing the flag
+ * (test.py --bootable). g_boot_release lives in uncached .bss, so the JTAG
+ * write is coherent with the CPU's spin.
+ * ------------------------------------------------------------------------- */
+
+#if BOOT_TEST
+
+extern volatile uint32_t g_boot_release;
+
+void ktrace_wait_boot(void);
+
+#define KTRACE_WAIT_BOOT() \
+    ktrace_wait_boot()
+
+#else
+
+#define KTRACE_WAIT_BOOT() ((void)0)
+
+#endif
+
+
 #else
 
 
@@ -89,6 +116,8 @@ void ktrace_wait_release(void);
 
 #define KTRACE_WAIT_RELEASE()        ((void)0)
 #define KTRACE_RELEASE_PENDING()     (0)
+
+#define KTRACE_WAIT_BOOT()           ((void)0)
 
 
 #endif

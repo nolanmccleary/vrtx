@@ -32,6 +32,13 @@ _heap_size   = 0x01000000;
 
 _capture_region = 0x80;
 
+/* mkpimage v0 header: 12 bytes at image offset 0x40 (validation 0x31305341,
+ * version, flags, length_u32, zero, 16-bit checksum). Reserved even for the JTAG
+ * build so the ONE image self-boots after an mkpimage wrap (make preloader). The
+ * boot ROM validates it; the reset branch at 0x00 skips over it. */
+_preloader_header_offset = 0x40;
+_preloader_header_size   = 0x0C;
+
 /* L3 remap "boot region": the MPU decodes physical [0, 0x100000) through the L3
  * interconnect, and NIC301_REMAP can swap what lives there (boot ROM / OCRAM / SDRAM).
  * SDRAM only starts at 0x100000 for the MPU. Anything the hardware reads directly and
@@ -88,53 +95,79 @@ SECTIONS
 
 
     /* ---------------------------------------------------------------------
-     * Host-shared NOLOAD region (status flags + telemetry + fault record)
+     * Program image: vectors + code + rodata, PINNED AT THE OCRAM BASE.
      *
-     * One merged region the host reads over JTAG. NOLOAD: the firmware
-     * initializes each part at runtime (telemetry_init, fault handlers), so a
-     * warm reset / reload leaves it intact.
+     * The Cyclone V boot ROM loads a self-boot image to ORIGIN(OCRAM) and
+     * branches to ORIGIN(OCRAM): byte 0 must be the reset vector, and image
+     * offset 0x40 must hold the mkpimage v0 header. The JTAG build keeps this
+     * exact shape, so the same test.elf self-boots after an mkpimage wrap -- no
+     * second linker. JTAG entry is position-independent (reg pc + runtime VBAR),
+     * so the base placement costs it nothing.
+     *
+     * The 0x40 header hole requires the reset/exception code to live in .text,
+     * NOT ._vectors -- see the ".text" split in kernel/startup.s. ._vectors is
+     * therefore exactly the 8-entry (0x20-byte) branch table.
+     *
+     * 4 KB-aligned/padded so the MMU L2 table for section 0xFFF marks exactly
+     * [_itext_start,_itext_end) Normal-cacheable (I-cache) and everything else in
+     * OCRAM (host_shared, data, GIC/timer) Device.
      * --------------------------------------------------------------------- */
 
-    .host_shared ORIGIN(OCRAM) (NOLOAD) :
+    .itext ORIGIN(OCRAM) :
     {
+        _itext_start = .;                       /* == ORIGIN(OCRAM): boot-ROM landing */
+
+        KEEP(*(._vectors))                      /* 8-entry branch table, 0x00..0x1F */
+
+
+
+
+        . = _itext_start + _preloader_header_offset;
+        _preloader_header = .;
+        . = . + _preloader_header_size;
+
+        . = ALIGN(10);
+
+        _boot_entry_addr = .;
+        KEEP(*(.boot_entry))
+
+        *(.text*)
+
+
+        *(.rodata*)
+
+        . = ALIGN(0x1000);
+        _itext_end = .;
+    } > OCRAM
+
+
+
+    /* ---------------------------------------------------------------------
+     * Host-shared NOLOAD region (telemetry + fault record).
+     *
+     * One merged region the host reads over JTAG; its own 4 KB Device (uncached)
+     * page so phys reads are coherent. Sits ABOVE the code now -- the code owns
+     * the OCRAM base (boot-ROM landing), so this can no longer live there.
+     * NOLOAD: the firmware fills it at runtime, so a warm reset/reload survives.
+     * --------------------------------------------------------------------- */
+
+    .host_shared ALIGN(0x1000) (NOLOAD) :
+    {
+        _host_shared_start = .;
+
         _telemetry_start = .;
-        KEEP(*(.telemetry))           /* g_telemetry */
+        KEEP(*(.telemetry))           /* g_metrics, g_edf_metrics */
         . = ALIGN(8);
         _telemetry_end = .;
 
         _fault_start = .;
         KEEP(*(.fault))               /* g_fault */
 
-        . = ALIGN(0x1000);          /* host_shared gets its own special 4kb uncached page */
+        . = ALIGN(0x1000);
         _host_shared_end = .;
     } > OCRAM
 
     _telemetry_size = _telemetry_end - _telemetry_start;
-
-
-
-    /* ---------------------------------------------------------------------
-     * Program image: vectors + code + rodata.
-     *
-     * 4 KB-aligned and page-padded so the MMU L2 table for section 0xFFF can mark
-     * exactly these pages Normal-cacheable (I-cache) while GIC/timer, host_shared,
-     * and the data pages below stay Device. Vectors go first; _itext_start is
-     * 4 KB-aligned so VBAR's 32-byte requirement is trivially met.
-     * --------------------------------------------------------------------- */
-
-    .itext ALIGN(0x1000) :
-    {
-        _itext_start = .;
-
-        KEEP(*(._vectors))
-        . = ALIGN(4);
-
-        *(.text*)
-        *(.rodata*)
-
-        . = ALIGN(0x1000);
-        _itext_end = .;
-    } > OCRAM
 
 
 
@@ -233,6 +266,15 @@ SECTIONS
        sub-block device, at 4096-byte granularity. Each boundary must be 4096-byte aligned
        or one page straddles cacheable code and device data -> uncached code, or cached
        (JTAG-incoherent) data. */
+    /* Self-boot: the reset vector MUST be at the boot-ROM landing (ORIGIN(OCRAM)),
+       and the mkpimage header hole MUST be at image offset 0x40. */
+    ASSERT(_itext_start == ORIGIN(OCRAM),
+        "reset vector table is not at the OCRAM base (boot ROM branches to ORIGIN(OCRAM))")
+    ASSERT(_preloader_header == ORIGIN(OCRAM) + 0x40,
+        "mkpimage header hole is not at image offset 0x40")
+
+    ASSERT((_host_shared_start & (0x1000 - 1)) == 0,
+        "host_shared does not start on a 4096-byte page boundary")
     ASSERT((_host_shared_end & (0x1000 - 1)) == 0,
         "host_shared does not end on a 4096-byte page boundary")
     ASSERT((_itext_start & (0x1000 - 1)) == 0,
@@ -245,4 +287,7 @@ SECTIONS
     /* The OCRAM image (through .bss) must not overflow into the SYS stack. */
     ASSERT(_bss_end <= _sys_stack_top - _stack_size,
         "OCRAM image overflows into the SYS stack")
+        
+    ASSERT(_boot_entry_addr == ORIGIN(OCRAM) + 0x50,
+       "Cyclone V boot entry is not at OCRAM + 0x50")
 }

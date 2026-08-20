@@ -63,6 +63,11 @@ ENABLE_SMP    ?= 1   # enable the MPCore SCU (L1 D-cache coherency); requires EN
 # for a "real" build that wants watchdog protection.
 DISABLE_WDT   ?= 1
 
+# Self-boot test gate: compile the spin at the top of main() that hangs until
+# JTAG writes g_boot_release. Needed only for the no-debugger SD boot flow --
+# enable with `make boot`, drive with `python test.py --bootable`.
+BOOT_TEST     ?= 0
+
 CFLAGS := \
 	-mcpu=cortex-a9 \
 	-marm \
@@ -81,7 +86,8 @@ CFLAGS := \
 	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) \
 	-DENABLE_SMP=$(ENABLE_SMP) \
-	-DDISABLE_WDT=$(DISABLE_WDT)
+	-DDISABLE_WDT=$(DISABLE_WDT) \
+	-DBOOT_TEST=$(BOOT_TEST)
 
 
 LDFLAGS := \
@@ -143,8 +149,44 @@ test: build/test.elf
 all: build/test.elf
 
 
+# ---------------------------------------------------------------------------
+# Self-boot build + flash: the ONE image + the BOOT_TEST gate, wrapped for SD
+# boot and written to the microSD's 0xA2 partition (scripts/flash_sd.sh locates
+# the card safely and writes only that slice -- no reformat). Then power-cycle
+# and drive with `python test.py --bootable`.
+#
+# Force-rebuilds test.elf because only a -D flag changes (make can't see that in
+# the timestamps). After running this, `make clean` before a normal `make test`
+# so the gate isn't left compiled in. `make boot FLASH_DRYRUN=1` detects the card
+# and stops before writing.
+# ---------------------------------------------------------------------------
+
+boot:
+	rm -f build/test.elf
+	$(MAKE) BOOT_TEST=1 build/test.elf preloader
+	FLASH_DRYRUN=$(FLASH_DRYRUN) bash scripts/flash_sd.sh build/preloader.img
+
+
+# ---------------------------------------------------------------------------
+# Self-boot preloader image  (experimental)
+#
+# NOT a separate build: the ONE test.elf is already boot-ROM-shaped (vectors at
+# the OCRAM base + a 0x40 mkpimage-header hole -- see linker/de1-soc.ld and the
+# ".text" split in kernel/startup.s). 
+# ---------------------------------------------------------------------------
+
+preloader: build/test.elf
+	$(OBJCOPY) -O binary $< build/preloader.bin
+
+	@echo "preloader.bin: $$(wc -c < build/preloader.bin) bytes (must fit the boot ROM OCRAM budget)"
+	mkimage -T socfpgaimage -d build/preloader.bin build/preloader.img && echo "wrote build/preloader.img (mkimage -T socfpgaimage)"; \
+
+	@echo "then (DE1-SoC boots SD only) flash to the raw 0xA2 partition:"
+	@echo "   sudo dd if=build/preloader.img of=/dev/<sd-A2-partition> bs=64k conv=fsync"
+
+
 clean:
 	rm -rf build
 
 
-.PHONY: build clean flash test
+.PHONY: build clean flash test preloader boot

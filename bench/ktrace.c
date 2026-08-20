@@ -82,4 +82,46 @@ void ktrace_wait_release(void)
 }
 
 
+#if BOOT_TEST
+
+/* Self-boot gate: spin until JTAG writes g_boot_release (test.py --bootable).
+ * Zeroed on entry so an uninitialized/garbage value can't skip the gate; runs
+ * before c_startup(), i.e. MMU + caches off, so the flag is plain physical
+ * memory the debugger reads/writes coherently. */
+volatile uint32_t g_boot_release = 0u;
+
+void ktrace_wait_boot(void)
+{
+    g_boot_release = 0u;
+
+    __asm__ __volatile__(
+        "dmb sy"
+        :
+        :
+        : "memory"
+    );
+
+
+    while (g_boot_release == 0u)
+    {
+        __asm__ __volatile__(
+            ""
+            :
+            :
+            : "memory"
+        );
+    }
+
+
+    __asm__ __volatile__(
+        "dmb sy"
+        :
+        :
+        : "memory"
+    );
+}
+
+#endif
+
+
 #endif

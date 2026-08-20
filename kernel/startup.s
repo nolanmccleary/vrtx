@@ -23,6 +23,10 @@
 .equ RSTMGR_MPUMODRST,      0xFFD05010
 .equ RSTMGR_MPUMODRST_CPU1, 0x2
 
+@; Peripheral module reset: bits 6/7 hold L4 watchdog 0/1 in reset.
+.equ RSTMGR_PERMODRST,      0xFFD05014
+.equ RSTMGR_PERMODRST_L4WD, 0xC0   @; (1<<6)|(1<<7)
+
 
 
 .global _vectors
@@ -40,15 +44,57 @@ _vectors:
     B _fiq_handler
 
 
+
+
+
+.section .boot_entry, "ax"
+.global _boot_entry
+_boot_entry:
+    B _reset_handler
+
+
+
+
+
+
+
+
+@; Reset + exception handlers live in .text, NOT in ._vectors, so ._vectors is
+@; exactly the 32-byte (8-entry) branch table. This lets the self-boot linker
+@; (linker/de1-soc-preloader.ld) reserve image offset 0x40 for the mkpimage v0
+@; header without code landing on it. The JTAG build is unaffected: VBAR still
+@; points at _vectors, and B _reset_handler reaches .text from the table.
+.text
 _reset_handler:
+
+    mrc p15, 0, r1, c1, c0, 0
+    bic r1, r1, #0x1            @; MMU off
+    bic r1, r1, #(0x1 << 12)   @; I-cache off
+    bic r1, r1, #(0x1 << 2)    @; D-cache off
+    dsb
+    mcr p15, 0, r1, c1, c0, 0
+    isb
+    mov r5, #2
+    str r5, [r4]
+
+    ldr r0, =RSTMGR_PERMODRST
+    ldr r1, [r0]
+    orr r1, r1, #RSTMGR_PERMODRST_L4WD
+    str r1, [r0]
+    dsb
+
     ldr r0, =RSTMGR_MPUMODRST @; Ensure CPU1 is in reset mode
     ldr r1, [r0]
     orr r1, r1, #RSTMGR_MPUMODRST_CPU1
     str r1, [r0]
     dsb
+    mov r5, #3
+    str r5, [r4]                @; 3: past CPU1-hold (RSTMGR write)
 
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
+    mov r5, #4
+    str r5, [r4]                @; 4: past VBAR set
 
     ldr r0, =_und_stack_top
 
@@ -141,7 +187,11 @@ set_loop:
 
     @; MMU + cache init deferred to mmu_cache_init() in main(), after SDRAM PHY is up.
 
-    msr CPSR_c, #(MODE_SYS)    @; no I_BIT, no F_BIT = both enabled
+    @; Stay in SYS mode with IRQ+FIQ MASKED through early init. In self-boot the
+    @; boot ROM can leave a pending peripheral interrupt (SD/MMC); running the gate
+    @; / bsp init with interrupts on lets it fire before the GIC is configured and
+    @; escape to the ROM. psched_init() does the cpsie once the GIC is up.
+    msr CPSR_c, #(MODE_SYS | I_BIT | F_BIT)
 
     @ Zero BSS
     ldr r0, =_bss_start
@@ -152,6 +202,8 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
+    mov r5, #5
+    str r5, [r4]                @; 5: reset complete, calling main (next stop: the C code / gate)
     bl main
     
 
