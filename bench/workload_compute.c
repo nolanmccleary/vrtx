@@ -28,7 +28,7 @@
  * bit-identical across I-cache on/off builds (a caching bug would change it).
  * Lives in .bss (a Device OCRAM page) so JTAG reads it coherently.
  */
-volatile uint32_t g_compute_checksum;
+HOST_SHARED volatile uint32_t g_compute_checksum;
 
 
 void compute_bench(int slot)

@@ -74,8 +74,7 @@ _reset_handler:
     dsb
     mcr p15, 0, r1, c1, c0, 0
     isb
-    mov r5, #2
-    str r5, [r4]
+
 
     ldr r0, =RSTMGR_PERMODRST
     ldr r1, [r0]
@@ -88,13 +87,9 @@ _reset_handler:
     orr r1, r1, #RSTMGR_MPUMODRST_CPU1
     str r1, [r0]
     dsb
-    mov r5, #3
-    str r5, [r4]                @; 3: past CPU1-hold (RSTMGR write)
 
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
-    mov r5, #4
-    str r5, [r4]                @; 4: past VBAR set
 
     ldr r0, =_und_stack_top
 
@@ -128,20 +123,6 @@ _reset_handler:
     msr CPSR_c, #(MODE_SYS | I_BIT | F_BIT)
     mov sp, r0
 
-    @; RUNTIME IS NOMINALLY IN SYSTEM MODE
-
-    @; Disabling MMU and caches explicitly; A9 does this on true reset but we may
-    @; vector here from other conditions in the future.
-    mrc p15, 0, r1, c1, c0, 0
-
-    @; DISABLE MMU + L1
-    bic r1, r1, #0x1           @ MMU disable
-    bic r1, r1, #(0x1 << 12)  @ I-cache disable
-    bic r1, r1, #(0x1 << 2)   @ D-cache disable
-
-    DSB
-    mcr p15, 0, r1, c1, c0, 0
-    ISB
 
     @; INVALIDATE L1 I-CACHE
     mov r1, #0
@@ -185,15 +166,8 @@ set_loop:
     DSB
     ISB
 
-    @; MMU + cache init deferred to mmu_cache_init() in main(), after SDRAM PHY is up.
 
-    @; Stay in SYS mode with IRQ+FIQ MASKED through early init. In self-boot the
-    @; boot ROM can leave a pending peripheral interrupt (SD/MMC); running the gate
-    @; / bsp init with interrupts on lets it fire before the GIC is configured and
-    @; escape to the ROM. psched_init() does the cpsie once the GIC is up.
-    msr CPSR_c, #(MODE_SYS | I_BIT | F_BIT)
-
-    @ Zero BSS
+@; Zero BSS
     ldr r0, =_bss_start
     ldr r1, =_bss_end
     mov r2, #0
@@ -202,8 +176,6 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
-    mov r5, #5
-    str r5, [r4]                @; 5: reset complete, calling main (next stop: the C code / gate)
     bl main
     
 

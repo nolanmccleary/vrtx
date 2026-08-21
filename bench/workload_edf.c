@@ -45,14 +45,17 @@ const uint32_t g_edf_periods[NTASKS] =
 };
 
 
-volatile uint32_t g_edf_u_index;
-volatile uint32_t g_edf_u_permille;
+/* EDF test/JTAG state -- host_shared (uncached), read/written directly. These
+ * are pure test payload, not perf-critical system data, so no caching wanted. */
+HOST_SHARED volatile uint32_t g_edf_u_index;
+HOST_SHARED volatile uint32_t g_edf_u_permille;
 
-volatile uint32_t g_edf_C[NTASKS];
-volatile uint32_t g_edf_done[NTASKS];
+HOST_SHARED volatile uint32_t g_edf_C[NTASKS];
+HOST_SHARED volatile uint32_t g_edf_done[NTASKS];
 
-volatile uint8_t  g_sched_trace[TRACE_TICKS];
-volatile uint32_t g_trace_len;
+HOST_SHARED volatile uint8_t  g_sched_trace[TRACE_TICKS];
+HOST_SHARED volatile uint32_t g_trace_len;
+
 static uint32_t trace_active;   /* 1 while a trial is running (every trial is traced) */
 static uint32_t iters[NTASKS];
 
@@ -61,7 +64,12 @@ static uint32_t iters[NTASKS];
  * metrics_t here; the region is uncached (.telemetry), so a JTAG phys read at the
  * trial halt sees fresh ci_av/ti_av with no cache maintenance -- the CPU copy reads
  * its own fresh cache and writes memory the host reads directly. Index by task. */
-metrics_t g_edf_metrics[NTASKS] __attribute__((section(".telemetry"), used));
+/* MIRRORS: cached, system-owned globals cloned into host_shared every tick by
+ * ktrace_edf_tick, so the debugger reads coherent values without the CPU paying
+ * for uncached access on the hot paths. */
+HOST_SHARED metrics_t g_edf_metrics[NTASKS];   /* <- running->metrics (cached thread_t)  */
+HOST_SHARED uint32_t  g_ticks_m;               /* <- gTicks (cached scheduler counter)   */
+HOST_SHARED uint32_t  g_misses_m;              /* <- gMissedDeadlines                     */
 
 
 
@@ -153,6 +161,11 @@ void ktrace_edf_tick(thread_t* running)
     {
         g_edf_metrics[idx] = running->metrics;
     }
+
+    /* Clone the cached, system-owned counters into their host_shared mirrors so
+     * the debugger reads them coherently once OCRAM .bss is cacheable. */
+    g_ticks_m  = gTicks;
+    g_misses_m = gMissedDeadlines;
 }
 
 
@@ -244,6 +257,8 @@ static void reset_trial(void)
 
     g_trace_len    = 0u;
     trace_active   = 1u;   /* trace every trial; the host reads each one and picks which to plot */
+
+    metric_reset(SCHED_METRIC);   /* fresh scheduler-cost distribution per trial */
 
 
     for (uint32_t i = 0; i < NTASKS; i++)

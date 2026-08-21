@@ -28,21 +28,3 @@ void pmu_init(void)
 
     __asm__ __volatile__("isb" ::: "memory");
 }
-
-
-#define NUM_REPS 64
-uint32_t pmu_calibrate(void)
-{
-    uint32_t best_read = 0xFFFFFFFFu;
-
-    // Minimum cycles between two successive reads
-    for (int i = 0; i < NUM_REPS; i++)
-    {
-        uint32_t a = pmu_cycles();
-        uint32_t b = pmu_cycles();
-        uint32_t delta = b - a;
-        if (delta < best_read) best_read = delta;
-    }
-
-    return best_read;
-}

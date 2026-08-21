@@ -35,6 +35,7 @@ EDF_SECONDS = 12.0
 
 EDF_TASKS = 3
 ALLOC_METRICS = 7   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, mem_walk_256k, matmul_32
+SCHED_METRIC = 7    # g_metrics slot 7: per-tick scheduler cost (must match telemetry.h)
 
 TRACE_TICKS = 2400         # g_sched_trace capacity (must match workload_edf.c); 4 hyperperiods (lcm(40,60,100)=600)
 GANTT_WINDOW = 720         # ticks shown in the Gantt -- 3x the original 240 (>1 hyperperiod), rest of the 2400-tick capture is unshown
@@ -161,6 +162,8 @@ class EDFResult:
     ci_av: tuple[int, ...]      # EWMA compute cycles per job
     ti_av: tuple[int, ...]      # EWMA inter-arrival cycles (~ period)
     ci: tuple[int, ...]         # last job's compute cycles (acute)
+
+    sched: Metric               # per-tick scheduler cost (g_metrics[SCHED_METRIC])
 
     @property
     def requested_u(self) -> float:
@@ -706,7 +709,7 @@ def collect_edf_trial(
 ) -> EDFResult:
 
     ticks = ocd.read_u32(
-        symbols["gTicks"]
+        symbols["g_ticks_m"]
     )
 
     c = tuple(
@@ -747,6 +750,8 @@ def collect_edf_trial(
     ci_av = tuple(m[1] for m in mets)   # metrics_t.ci_av
     ti_av = tuple(m[5] for m in mets)   # metrics_t.ti_av
 
+    sched = read_metric(ocd, symbols["g_metrics"], SCHED_METRIC)
+
     return EDFResult(
         index=ocd.read_u32(
             symbols["g_edf_u_index"]
@@ -759,7 +764,7 @@ def collect_edf_trial(
         ticks=ticks,
 
         misses=ocd.read_u32(
-            symbols["gMissedDeadlines"]
+            symbols["g_misses_m"]
         ),
 
         c=c,
@@ -770,6 +775,8 @@ def collect_edf_trial(
         ci_av=ci_av,
         ti_av=ti_av,
         ci=ci,
+
+        sched=sched,
     )
 
 
@@ -808,7 +815,8 @@ def print_edf_header() -> None:
         f"{'cfgU':>6} "
         f"{'measU':>6} "
         f"{'ticks':>8} "
-        f"{'miss':>8}   "
+        f"{'miss':>8} "
+        f"{'sched':>7}   "
         f"per-task measured U (ci_av/ti_av)"
     )
 
@@ -827,8 +835,9 @@ def print_edf_result(
         f"{result.configured_u:>6.3f} "
         f"{result.measured_u:>6.3f} "
         f"{result.ticks:>8} "
-        f"{result.misses:>8}   "
-        f"{per_task}"
+        f"{result.misses:>8} "
+        f"{result.sched.mean:>7} "
+        f"  {per_task}"
     )
 
 
@@ -942,6 +951,10 @@ def write_edf_csv(
                 "ticks",
                 "misses",
 
+                "sched_mean_cyc",
+                "sched_min_cyc",
+                "sched_max_cyc",
+
                 "C0",
                 "C1",
                 "C2",
@@ -978,6 +991,10 @@ def write_edf_csv(
 
                     result.ticks,
                     result.misses,
+
+                    result.sched.mean,
+                    result.sched.minimum,
+                    result.sched.maximum,
 
                     *result.c,
                     *result.periods,
@@ -1145,82 +1162,48 @@ def plot_edf(
     path: Path,
 ) -> None:
 
-    requested = [result.requested_u for result in rows]
-    misses    = [result.misses      for result in rows]
-    measured  = [result.measured_u  for result in rows]
+    requested = [result.requested_u   for result in rows]
+    misses    = [result.misses        for result in rows]
+    measured  = [result.measured_u    for result in rows]
+    cost_mean = [result.sched.mean    for result in rows]
+    cost_max  = [result.sched.maximum for result in rows]
 
-    fig, (a1, a2) = plt.subplots(
-        2,
+    fig, (a1, a2, a3) = plt.subplots(
+        3,
         1,
-        figsize=(8, 7),
+        figsize=(8, 10),
         sharex=True,
     )
 
-    a1.plot(
-        requested,
-        misses,
-        "o-",
-    )
+    # a1: deadline misses vs requested U.
+    a1.plot(requested, misses, "o-")
+    a1.axvline(1.0, linestyle="--")
+    a1.set_ylabel("deadline misses")
+    a1.set_title("EDF: schedulability, scheduler cost, measured utilization")
+    a1.grid(alpha=0.3)
 
-    a1.axvline(
-        1.0,
-        linestyle="--",
-    )
+    # a2: scheduler cost per tick (next_thread bracketed by MEASURE_BEGIN/END).
+    a2.plot(requested, cost_mean, "o-", label="mean")
+    a2.plot(requested, cost_max, "x--", color="gray", alpha=0.6, label="max")
+    a2.axvline(1.0, linestyle="--")
+    a2.set_ylabel("scheduler cycles / tick")
+    a2.legend()
+    a2.grid(alpha=0.3)
 
-    a1.set_ylabel(
-        "deadline misses"
-    )
-
-    a1.set_title(
-        "EDF schedulability and measured utilization"
-    )
-
-    a1.grid(
-        alpha=0.3
-    )
-
-
-    # Measured U (from per-task ci_av/ti_av) vs requested U. The y=x reference
-    # shows how measured tracks request and where the CPU saturates (flattens
-    # toward 1.0 once overloaded).
+    # a3: measured U (per-task ci_av/ti_av) vs requested U. The y=x reference
+    # shows how measured tracks request and saturates toward 1.0 under overload.
     if requested:
         lo, hi = min(requested), max(requested)
-        a2.plot([lo, hi], [lo, hi], "--", color="gray", label="y = x")
-
-    a2.plot(
-        requested,
-        measured,
-        "o-",
-        label="measured",
-    )
-
-    a2.axvline(
-        1.0,
-        linestyle="--",
-    )
-
-    a2.set_ylabel(
-        "measured utilization"
-    )
-
-    a2.set_xlabel(
-        "requested utilization"
-    )
-
-    a2.legend()
-
-    a2.grid(
-        alpha=0.3
-    )
-
+        a3.plot([lo, hi], [lo, hi], "--", color="gray", label="y = x")
+    a3.plot(requested, measured, "o-", label="measured")
+    a3.axvline(1.0, linestyle="--")
+    a3.set_ylabel("measured utilization")
+    a3.set_xlabel("requested utilization")
+    a3.legend()
+    a3.grid(alpha=0.3)
 
     fig.tight_layout()
-
-    fig.savefig(
-        path,
-        dpi=130,
-    )
-
+    fig.savefig(path, dpi=130)
     plt.close(fig)
 
 
@@ -1322,8 +1305,8 @@ def main(bootable: bool = False) -> None:
             "g_metrics",
             "g_edf_metrics",
 
-            "gTicks",
-            "gMissedDeadlines",
+            "g_ticks_m",
+            "g_misses_m",
 
             "g_edf_u_values",
             "g_edf_u_count",
@@ -1403,16 +1386,9 @@ def main(bootable: bool = False) -> None:
             # Board self-booted from SD; firmware is spinning at the BOOT_TEST
             # gate. Do NOT load_image -- just attach and halt the spin.
             ocd.halt()
-
-            # Boot progress marker (0xFFFF9000): last step the firmware reached.
-            #   reset handler 1-5 | main 6 | past gate 7 | c_startup 8-15 | done 16
-            mark = ocd.read_u32(0xFFFF9000)
             print(
-                f"bootable: attached, PC=0x{ocd.pc():08x}, "
-                f"boot marker = {mark} (0x{mark:08x})\n"
-                f"  [1-5 reset | 6 main | 7 past-gate | 8 c_startup | "
-                f"9 bsp_board_init | 10 mmu | 11 gic | 12 timer | "
-                f"13 pmu | 14 heap | 15 psched | 16 done]\n"
+                f"bootable: attached to self-booted target, "
+                f"PC=0x{ocd.pc():08x} (should be inside ktrace_wait_boot)\n"
             )
         else:
             ocd.load_image(

@@ -230,6 +230,8 @@ inline void next_thread()
 
     if (sched_init)
     {
+        KTRACE_SCHED_BEGIN();   /* test-only: start per-tick scheduler-cost timer */
+
         if (curr_thread->thread_status == RUNNING) switch_out(curr_thread);
 
         gTicks++;
@@ -358,6 +360,8 @@ inline void next_thread()
 
 
         switch_in(curr_thread);
+
+        KTRACE_SCHED_END();   /* test-only: fold this tick's scheduler cost into g_metrics[SCHED_METRIC] */
 
         KTRACE_TICK_EXIT(curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
 

@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 #include "bsp.h"
 #include "boot.h"
@@ -44,9 +45,7 @@ void c_irq_handler(int id)
     switch(id)
     {
         case 0x1b:
-#if !DISABLE_WDT
             WDT_L4 = 0x76; //Feed WDT
-#endif
             GTIMER_ISR = 1;
             next_thread();
             break;
@@ -179,9 +178,7 @@ void bsp_gic_init(void)
 
 void bsp_board_init(void)
 {
-#if DISABLE_WDT
     RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
-#endif
 
 #ifdef BOARD_DE1_SOC
     pll_init();
@@ -228,14 +225,17 @@ void bsp_memory_and_cache_init(void)
     }
 
 #if ENABLE_ICACHE
-    /* Fill the L2 table for the delegated block: the OCRAM code range
-       [_itext_start, _itext_end) is cacheable (so the I-cache can hold it); the GIC, the
-       timer, and the JTAG-visible data sub-blocks are device. This L2 table is the SOLE
-       source of memory type for that block. */
-    extern uint32_t _itext_start;
-    extern uint32_t _itext_end;
-    uint32_t code_start = (uint32_t)&_itext_start;
-    uint32_t code_end   = (uint32_t)&_itext_end;
+    /* Fill the L2 table for the delegated block (0xFFF00000..0xFFFFFFFF, which holds
+       the boot ROM, GIC/timer, and OCRAM). Rule: ALL of OCRAM (>= _ocram_origin) is
+       Normal-cacheable -- text/data/bss/stacks -- EXCEPT the host_shared window, which
+       stays Device so JTAG reads/writes it coherently. Everything below OCRAM in the
+       block (boot ROM, GIC, timer) is Device. This L2 table is the SOLE source of
+       memory type for the block. */
+    extern char _host_shared_start[];
+    extern char _host_shared_end[];
+    uint32_t ocram_start = (uint32_t)(uintptr_t)_ocram_origin;
+    uint32_t hs_start    = (uint32_t)(uintptr_t)_host_shared_start;
+    uint32_t hs_end      = (uint32_t)(uintptr_t)_host_shared_end;
 
     volatile uint32_t *l2_table = _l2_table_base;
 
@@ -243,9 +243,10 @@ void bsp_memory_and_cache_init(void)
     {
         uint32_t l2_block_base = (delegated_block << L1_BLOCK_ADDR_SHIFT)
                                + (l2_block << L2_BLOCK_ADDR_SHIFT);
-        int      is_code_block = (l2_block_base >= code_start) && (l2_block_base < code_end);
-        uint32_t l2_entry      = is_code_block ? L2_ENTRY_MAP_SUBBLOCK_CACHEABLE
-                                               : L2_ENTRY_MAP_SUBBLOCK_DEVICE;
+        bool      in_ocram       = (l2_block_base >= ocram_start);
+        bool      in_host_shared = (l2_block_base >= hs_start) && (l2_block_base < hs_end);
+        uint32_t l2_entry       = (in_ocram && !in_host_shared) ? L2_ENTRY_MAP_SUBBLOCK_CACHEABLE
+                                                                : L2_ENTRY_MAP_SUBBLOCK_DEVICE;
 
         l2_table[l2_block] = l2_block_base | l2_entry;
     }

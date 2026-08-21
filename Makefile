@@ -58,10 +58,6 @@ ENABLE_ICACHE ?= 1
 ENABLE_L2     ?= 1   # PL310 outer (L2) cache; requires ENABLE_MMU
 ENABLE_SMP    ?= 1   # enable the MPCore SCU (L1 D-cache coherency); requires ENABLE_MMU
 
-# Dev convenience: hold the L4 watchdog in reset at boot so a hang/fault never
-# resets the HPS (which drops the JTAG-DP and wedges the USB-Blaster). Set to 0
-# for a "real" build that wants watchdog protection.
-DISABLE_WDT   ?= 1
 
 # Self-boot test gate: compile the spin at the top of main() that hangs until
 # JTAG writes g_boot_release. Needed only for the no-debugger SD boot flow --
@@ -86,7 +82,6 @@ CFLAGS := \
 	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) \
 	-DENABLE_SMP=$(ENABLE_SMP) \
-	-DDISABLE_WDT=$(DISABLE_WDT) \
 	-DBOOT_TEST=$(BOOT_TEST)
 
 

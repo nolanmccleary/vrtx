@@ -6,7 +6,6 @@
 
 
 void pmu_init(void);
-uint32_t pmu_calibrate(void);
 
 
 static inline uint32_t pmu_cycles(void)

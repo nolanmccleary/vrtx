@@ -7,6 +7,14 @@
 #include "pmu.h"
 
 
+/* Place a global in the uncached, JTAG-coherent host_shared region (linker
+ * .telemetry). Now that all other OCRAM (text/data/bss/stacks) is Normal-
+ * cacheable, anything the debugger reads or writes must be marked HOST_SHARED --
+ * either a value written directly here, or a mirror of a cached global that a
+ * per-tick commit (ktrace_edf_tick) clones in. */
+#define HOST_SHARED __attribute__((section(".telemetry"), used))
+
+
 /* -------------------------------------------------------------------------
  * Host-readable metric table
  *
@@ -26,7 +34,10 @@ typedef struct
 }   metric_t;
 
 
-#define METRIC_SLOTS  8   /* allocbench uses 7 (malloc..matmul); headroom for one more */
+#define METRIC_SLOTS  8   /* allocbench uses 0..6 (malloc..matmul); slot 7 = scheduler */
+
+/* g_metrics slot 7: per-tick scheduler cost, bracketed around next_thread. */
+#define SCHED_METRIC  7
 
 
 extern metric_t g_metrics[METRIC_SLOTS];

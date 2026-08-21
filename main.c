@@ -13,7 +13,6 @@ static void c_startup(void)
     bsp_timer_start();
 
     pmu_init();
-    pmu_calibrate();
 
     heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
     psched_init();
