@@ -56,7 +56,7 @@ ENABLE_MMU    ?= 1
 ENABLE_DCACHE ?= 1
 ENABLE_ICACHE ?= 1
 ENABLE_L2     ?= 1   # PL310 outer (L2) cache; requires ENABLE_MMU
-ENABLE_SMP    ?= 1   # enable the MPCore SCU (L1 D-cache coherency); requires ENABLE_MMU
+ENABLE_SMP    ?= 1
 
 
 # Self-boot test gate: compile the spin at the top of main() that hangs until
@@ -82,7 +82,8 @@ CFLAGS := \
 	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) \
 	-DENABLE_SMP=$(ENABLE_SMP) \
-	-DBOOT_TEST=$(BOOT_TEST)
+	-DBOOT_TEST=$(BOOT_TEST) \
+	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP)
 
 
 LDFLAGS := \

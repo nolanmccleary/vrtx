@@ -45,8 +45,8 @@ void c_irq_handler(int id)
     switch(id)
     {
         case 0x1b:
-            WDT_L4 = 0x76; //Feed WDT
-            GTIMER_ISR = 1; //GTIMER can now emit interrupt signal again
+            // WDT_L4 = 0x76; //Feed WDT
+            GTIMER_ISR = 1; //Timer ISR ACK, when this
             next_thread();
             break;
 
@@ -176,13 +176,13 @@ void bsp_gic_init(void)
 
 
 
-void bsp_board_init(void)
+void bsp_sdram_init(void)
 {
-    RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
+    // RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
 
 #ifdef BOARD_DE1_SOC
     pll_init();
-    scan_mgr_init();
+    scan_mgr_init();         //PHY ANA
     sdram_ctrl_init();
     (void)sdram_calibration_full((struct socfpga_sdr *)0xFFC20000U);
     PL310_FILTER_END   = 0x40000000U;  /* SDRAM window: 0x0..0x3FFFFFFF -> M1 */
@@ -192,7 +192,7 @@ void bsp_board_init(void)
 }
 
 
-void bsp_memory_and_cache_init(void)
+void bsp_mmu_and_cache_init(void)
 {
 #if ENABLE_SMP
     scu_init();        /* enable SCU coherency before caches/ACTLR.SMP come on */

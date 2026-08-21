@@ -23,6 +23,10 @@
 .equ RSTMGR_MPUMODRST,      0xFFD05010
 .equ RSTMGR_MPUMODRST_CPU1, 0x2
 
+@; System Manager romcodegrp.cpu1startaddr -- boot ROM's CPU1 start-address comparator.
+@; (must match SYSMGR_ROMCODE_CPU1STARTADDR in bsp/boot.h)
+.equ SYSMGR_ROMCODE_CPU1STARTADDR, 0xFFD080C4
+
 @; Peripheral module reset: bits 6/7 hold L4 watchdog 0/1 in reset.
 .equ RSTMGR_PERMODRST,      0xFFD05014
 .equ RSTMGR_PERMODRST_L4WD, 0xC0   @; (1<<6)|(1<<7)
@@ -60,34 +64,20 @@ _boot_entry:
 .text
 _reset_handler:
 
-    mrc p15, 0, r1, c1, c0, 0
-    bic r1, r1, #0x1            @; MMU off
-    bic r1, r1, #(0x1 << 12)   @; I-cache off
-    bic r1, r1, #(0x1 << 2)    @; D-cache off
-    dsb
-    mcr p15, 0, r1, c1, c0, 0
-    isb
+    ; ldr r0, =RSTMGR_PERMODRST @; Disable watchdog interrupts
+    ; ldr r1, [r0]
+    ; orr r1, r1, #RSTMGR_PERMODRST_L4WD
+    ; str r1, [r0]
+    ; dsb
 
-
-    ldr r0, =RSTMGR_PERMODRST
-    ldr r1, [r0]
-    orr r1, r1, #RSTMGR_PERMODRST_L4WD
-    str r1, [r0]
-    dsb
-
-    ldr r0, =RSTMGR_MPUMODRST @; Ensure CPU1 is in reset mode
-    ldr r1, [r0]
-    orr r1, r1, #RSTMGR_MPUMODRST_CPU1
-    str r1, [r0]
-    dsb
 
     ldr r0, =_vectors
     mcr p15, 0, r0, c12, c0, 0  @; VBAR = _vectors
 
+
+    @; SET STACK POINTERS AND CPSR FOR EACH MODE
+
     ldr r0, =_und_stack_top
-
-    @; SET STACK POINTERS FOR EACH MODE
-
     msr CPSR_c, #(MODE_UND | I_BIT | F_BIT)
     mov sp, r0
     ldr r1, =_und_stack_size
@@ -115,6 +105,15 @@ _reset_handler:
 
     msr CPSR_c, #(MODE_SYS | I_BIT | F_BIT)
     mov sp, r0
+
+
+    ; mrc p15, 0, r1, c1, c0, 0
+    ; bic r1, r1, #0x1            @; MMU off
+    ; bic r1, r1, #(0x1 << 12)   @; I-cache off
+    ; bic r1, r1, #(0x1 << 2)    @; D-cache off
+    ; dsb
+    ; mcr p15, 0, r1, c1, c0, 0
+    ; isb
 
 
     @; INVALIDATE L1 I-CACHE
@@ -169,7 +168,37 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
+
+.if ENABLE_SMP != 0
+    ldr r0, =SYSMGR_ROMCODE_CPU1STARTADDR
+    ldr r1, =_cpu1_spin
+    str r1, [r0]                        @; cpu1startaddr = &_cpu1_spin
+
+    ldr r0, =g_cpu1_ready
+    mov r1, #0
+    str r1, [r0]                        @; clear handshake flag, immediately pre-release
+
+    ldr r0, =RSTMGR_MPUMODRST
+    ldr r1, [r0]
+    bic r1, r1, #RSTMGR_MPUMODRST_CPU1  @; deassert CPU1 reset -> CPU1 boots ROM -> _cpu1_spin
+    str r1, [r0]
+.endif
+
+
     bl main
+
+
+.if ENABLE_SMP != 0
+.align 2
+.global _cpu1_spin
+_cpu1_spin:
+    ldr r0, =g_cpu1_ready
+    mov r1, #1
+    str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
+    dsb
+1:  wfe
+    b 1b
+.endif
     
 
 

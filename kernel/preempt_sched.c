@@ -223,7 +223,6 @@ sys_exit_e psched_clear_threads(void)
 
 
 
-//TODO: Add thread id's and functionality to remove individual threads
 
 inline void next_thread()
 {
