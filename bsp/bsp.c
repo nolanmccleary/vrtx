@@ -46,7 +46,7 @@ void c_irq_handler(int id)
     {
         case 0x1b:
             WDT_L4 = 0x76; //Feed WDT
-            GTIMER_ISR = 1;
+            GTIMER_ISR = 1; //GTIMER can now emit interrupt signal again
             next_thread();
             break;
 

@@ -29,10 +29,10 @@
 
 
 
-.global _vectors
-.global _reset_handler
 
 .section ._vectors, "ax"
+.global _vectors
+.global _reset_handler
 _vectors:
     B _reset_handler @; rst interrupt vectors here by abi contract
     B _undef_handler
@@ -57,13 +57,6 @@ _boot_entry:
 
 
 
-
-
-@; Reset + exception handlers live in .text, NOT in ._vectors, so ._vectors is
-@; exactly the 32-byte (8-entry) branch table. This lets the self-boot linker
-@; (linker/de1-soc-preloader.ld) reserve image offset 0x40 for the mkpimage v0
-@; header without code landing on it. The JTAG build is unaffected: VBAR still
-@; points at _vectors, and B _reset_handler reaches .text from the table.
 .text
 _reset_handler:
 
@@ -298,9 +291,3 @@ _fiq_handler:
     RFEFD sp! @; Set PC and CPSR
 
 
-@; _context_switch:
-@;     mov r2 r0
-@;     mov r3 r1
-@;     add r2 _stack_size
-@;
-@;     BX lr
