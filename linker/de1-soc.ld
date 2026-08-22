@@ -20,7 +20,7 @@ _ocram_origin = ORIGIN(OCRAM);
  * Configuration
  * ------------------------------------------------------------------------- */
 
-_stack_size     = 0x1000;
+_stack_size     = 0x400;
 _abt_stack_size = 0x200;
 _und_stack_size = 0x200;
 
@@ -164,17 +164,21 @@ SECTIONS
      *     SYS
      * --------------------------------------------------------------------- */
 
-    _und_stack_top = ORIGIN(OCRAM) + LENGTH(OCRAM) - 4;
+    /* CPU0 bank: top of OCRAM, growing down. */
+    _cpu0_und_stack_top = ORIGIN(OCRAM) + LENGTH(OCRAM) - 4;
+    _cpu0_abt_stack_top = _cpu0_und_stack_top - _und_stack_size;
+    _cpu0_fiq_stack_top = _cpu0_abt_stack_top - _abt_stack_size;
+    _cpu0_irq_stack_top = _cpu0_fiq_stack_top - _stack_size;
+    _cpu0_svc_stack_top = _cpu0_irq_stack_top - _stack_size;
+    _cpu0_sys_stack_top = _cpu0_svc_stack_top - _stack_size;
 
-    _abt_stack_top = _und_stack_top - _und_stack_size;
-
-    _fiq_stack_top = _abt_stack_top - _abt_stack_size;
-
-    _irq_stack_top = _fiq_stack_top - _stack_size;
-
-    _svc_stack_top = _irq_stack_top - _stack_size;
-
-    _sys_stack_top = _svc_stack_top - _stack_size;
+    /* CPU1 bank: directly below CPU0's, identical sizes. */
+    _cpu1_und_stack_top = _cpu0_sys_stack_top - _stack_size;
+    _cpu1_abt_stack_top = _cpu1_und_stack_top - _und_stack_size;
+    _cpu1_fiq_stack_top = _cpu1_abt_stack_top - _abt_stack_size;
+    _cpu1_irq_stack_top = _cpu1_fiq_stack_top - _stack_size;
+    _cpu1_svc_stack_top = _cpu1_irq_stack_top - _stack_size;
+    _cpu1_sys_stack_top = _cpu1_svc_stack_top - _stack_size;
 
 
 
@@ -220,8 +224,14 @@ SECTIONS
     ASSERT((_data_start & (0x1000 - 1)) == 0,
         "data does not start on a 4096-byte page boundary")
 
-    /* The OCRAM image (through .bss) must not overflow into the SYS stack. */
-    ASSERT(_bss_end <= _sys_stack_top - _stack_size,
-        "OCRAM image overflows into the SYS stack")
-        
+    /* The runtime OCRAM footprint (image through .bss) must not collide with the
+       stacks, which grow down from the top. Lowest stack is now CPU1's SYS bank. */
+    ASSERT(_bss_end <= _cpu1_sys_stack_top - _stack_size,
+        "OCRAM image + CPU0/CPU1 stacks exceed the 64K OCRAM")
+
+    /* Boot ROM copies the loaded image (vectors + code + rodata + data) into the
+       64 KB OCRAM window; assert it fits that budget. */
+    ASSERT(_data_end - ORIGIN(OCRAM) <= 64K,
+        "OCRAM loaded image exceeds the 64K boot-ROM budget")
+
 }

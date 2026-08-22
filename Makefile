@@ -37,6 +37,7 @@ CORE := \
 	kernel/min_heap.c \
 	kernel/pmu.c \
 	kernel/thread.c \
+	kernel/cpu.c \
 	bench/ktrace.c \
 	bench/fault.c \
 	bench/telemetry.c \
@@ -83,7 +84,8 @@ CFLAGS := \
 	-DENABLE_L2=$(ENABLE_L2) \
 	-DENABLE_SMP=$(ENABLE_SMP) \
 	-DBOOT_TEST=$(BOOT_TEST) \
-	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP)
+	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP) \
+	-Wa,--defsym,BOOT_TEST=$(BOOT_TEST)
 
 
 LDFLAGS := \

@@ -61,6 +61,23 @@ void c_fiq_handler(int id)
     (void)id;
 }
 
+/////////////////////////////////////////////////////////////////////////////////////
+
+
+#if ENABLE_SMP
+volatile uint32_t g_cpu1_ready;
+#endif
+
+
+
+
+
+
+
+
+
+
+
 
 ///////////////////////////////////////////// SCU INIT //////////////////////////////
 
@@ -155,7 +172,7 @@ extern char     _ocram_origin[];    /* = ORIGIN(OCRAM): OCRAM base address      
 ///////////////////////////////////////////// STARTUP /////////////////////////////
 
 
-void bsp_timer_start(void)
+static void cpu0_timer_start(void)
 {
     GTIMER_CTRL    = 0;
     GTIMER_ISR     = 1;
@@ -165,8 +182,16 @@ void bsp_timer_start(void)
     GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
 }
 
+static void cpu1_timer_start(void)
+{
+    GTIMER_ISR     = 1;
+    GTIMER_AUTOINC = 199999;
+    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
+    GTIMER_CMPH    = GTIMER_CNTRH;
+    GTIMER_CTRL   |= (1 << 3) | (1 << 2) | (1 << 1);
+}
 
-void bsp_gic_init(void)
+static void cpu0_gic_init(void)
 {
     GICD_CTLR       = 1;
     GICD_ISENABLER0 |= (1 << 27);
@@ -175,8 +200,16 @@ void bsp_gic_init(void)
 }
 
 
+static void cpu1_gic_init(void)
+{
+    GICD_ISENABLER0 |= (1 << 27);
+    GICC_PMR        = 0xFF;
+    GICC_CTLR       = 1;
+}
 
-void bsp_sdram_init(void)
+
+
+static void bsp_sdram_init(void)
 {
     // RSTMGR_PERMODRST |= RSTMGR_PERMODRST_L4WD0 | RSTMGR_PERMODRST_L4WD1;
 
@@ -192,7 +225,7 @@ void bsp_sdram_init(void)
 }
 
 
-void bsp_mmu_and_cache_init(void)
+static void bsp_precache_init(void)
 {
 #if ENABLE_SMP
     scu_init();        /* enable SCU coherency before caches/ACTLR.SMP come on */
@@ -201,6 +234,14 @@ void bsp_mmu_and_cache_init(void)
 #if ENABLE_L2
     l2_cache_init();   /* enable the outer (L2) cache before the MMU + L1 come on */
 #endif
+
+    (void)(0);
+}
+
+
+
+static void build_tables(void)
+{
 #if ENABLE_MMU
     volatile uint32_t *l1_table = _l1_table_base;
 
@@ -253,7 +294,16 @@ void bsp_mmu_and_cache_init(void)
 
     l1_table[delegated_block] = (uint32_t)(uintptr_t)_l2_table_base | L1_ENTRY_POINT_TO_L2;
 #endif
+#endif
 
+    (void)(0);
+}
+
+
+
+static void set_ttb_ptrs(void)
+{
+#if ENABLE_MMU
     uint32_t ttbr0          = (uint32_t)(uintptr_t)_l1_table_base;
     uint32_t dacr           = DACR_ALL_DOMAINS_CLIENT;
     uint32_t smp_bit        = ACTLR_ENABLE_SMP;
@@ -302,4 +352,29 @@ void bsp_mmu_and_cache_init(void)
 }
 
 
+void cpu0_startup(void)
+{
+#if ENABLE_SMP
+    while (!g_cpu1_ready){}    /* wait for CPU1 in its spin loop before the remap below */
+#endif
 
+    bsp_sdram_init();               /* PLL/scan-mgr/SDRAM/NIC301 -- prime self-boot suspect */
+    bsp_precache_init();
+    build_tables();
+    set_ttb_ptrs();
+    cpu0_gic_init();
+    cpu0_timer_start();
+
+    pmu_init();
+    heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
+    psched_init();
+}
+
+
+void cpu1_startup(void)
+{
+    set_ttb_ptrs();
+    cpu1_gic_init();
+    cpu1_timer_start();
+    pmu_init();
+}

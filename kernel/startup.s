@@ -77,7 +77,15 @@ _reset_handler:
 
     @; SET STACK POINTERS AND CPSR FOR EACH MODE
 
-    ldr r0, =_und_stack_top
+.if ENABLE_SMP != 0
+    mrc p15, 0, r0, c0, c0, 5        @; MPIDR
+    and r0, r0, #0x3                 @; core id
+    cmp r0, #0
+    ldrne r0, =_cpu1_und_stack_top   @; CPU1: its own stack bank
+    ldreq r0, =_cpu0_und_stack_top   @; CPU0: top-of-OCRAM bank
+.else
+    ldr r0, =_cpu0_und_stack_top
+.endif
     msr CPSR_c, #(MODE_UND | I_BIT | F_BIT)
     mov sp, r0
     ldr r1, =_und_stack_size
@@ -158,7 +166,16 @@ set_loop:
     DSB
     ISB
 
+    .if ENABLE_SMP != 0
+        mrc p15, 0, r0, c0, c0, 5   @; MPIDR
+        and r0, r0, #0x3            @; core id: raw MPIDR is 0x8000000N, mask to 0/1
+        cmp r0, #0
+        bne _cpu1_fork
+    .endif
+    
 
+
+_cpu0_fork:
 @; Zero BSS
     ldr r0, =_bss_start
     ldr r1, =_bss_end
@@ -168,11 +185,11 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
-
+@; set cpu1 vector and enable
 .if ENABLE_SMP != 0
     ldr r0, =SYSMGR_ROMCODE_CPU1STARTADDR
-    ldr r1, =_cpu1_spin
-    str r1, [r0]                        @; cpu1startaddr = &_cpu1_spin
+    ldr r1, =_reset_handler
+    str r1, [r0]                        @; cpu1startaddr = &_reset_handler (CPU1 re-enters, forks on MPIDR)
 
     ldr r0, =g_cpu1_ready
     mov r1, #0
@@ -184,20 +201,39 @@ bss_zero:
     str r1, [r0]
 .endif
 
-
+.if BOOT_TEST != 0
+    bl ktrace_wait_boot
+.endif
+    bl cpu0_startup
+    ldr r0, =g_cpu_mailbox
+    mov r1, #1
+    str r1, [r0]
+    dsb 
+    sev
     bl main
 
 
+
+_cpu1_fork:
 .if ENABLE_SMP != 0
-.align 2
-.global _cpu1_spin
-_cpu1_spin:
-    ldr r0, =g_cpu1_ready
-    mov r1, #1
-    str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
-    dsb
-1:  wfe
-    b 1b
+    .align 2
+    .global _cpu1_spin
+    _cpu1_spin:
+        ldr r0, =g_cpu1_ready
+        mov r1, #1
+        str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
+        dsb
+        ldr r0, =g_cpu_mailbox 
+        
+        1:  ldr r1, [r0]
+            cmp r1, #0
+            bne engage
+            wfe
+            b 1b
+
+        engage:
+            bl cpu1_startup
+            bl cpu1_main
 .endif
     
 
@@ -212,10 +248,7 @@ _identify_and_clear_source:
 
 
 
-@; Synchronous-fault handlers. Capture the faulting PC (banked lr, adjusted per
-@; exception) and the pre-fault CPSR (banked spsr) BEFORE anything clobbers them,
-@; then fault_capture() reads the CP15 fault registers and fault_halt() stops the
-@; watchdog and traps at a host breakpoint. Vector ids match bench/fault.h.
+
 _undef_handler:
     sub lr, lr, #4      @; faulting instruction address
     mov r0, lr          @; arg1 = pc (saved before bl clobbers lr)
