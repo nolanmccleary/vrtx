@@ -44,15 +44,6 @@ void ktrace_edf_tick(thread_t* running);
     ktrace_edf_tick(running)
 
 
-/* Bracket next_thread top/bottom to accumulate per-tick scheduler cost into
- * g_metrics[SCHED_METRIC], reusing the allocbench MEASURE machinery. */
-#define KTRACE_SCHED_BEGIN() \
-    MEASURE_BEGIN(SCHED_METRIC)
-
-#define KTRACE_SCHED_END() \
-    MEASURE_END(SCHED_METRIC)
-
-
 #define KTRACE_ALLOC_DONE() \
     ktrace_bp_alloc_done()
 
@@ -122,9 +113,6 @@ void ktrace_wait_boot(void);
 #define KTRACE_EDF_DONE()            ((void)0)
 
 #define KTRACE_TICK_EXIT(running)    ((void)0)
-
-#define KTRACE_SCHED_BEGIN()         ((void)0)
-#define KTRACE_SCHED_END()           ((void)0)
 
 #define KTRACE_WAIT_RELEASE()        ((void)0)
 #define KTRACE_RELEASE_PENDING()     (0)

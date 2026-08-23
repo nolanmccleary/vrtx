@@ -2,6 +2,9 @@
 #define __SYSTEM_H_
 
 
+#define ALPHA 2
+
+
 typedef enum
 {
     SYS_OK,

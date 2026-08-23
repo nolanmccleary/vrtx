@@ -35,7 +35,6 @@ EDF_SECONDS = 12.0
 
 EDF_TASKS = 3
 ALLOC_METRICS = 7   # malloc, free, malloc_loaded, free_loaded, mem_walk_8k, mem_walk_256k, matmul_32
-SCHED_METRIC = 7    # g_metrics slot 7: per-tick scheduler cost (must match telemetry.h)
 
 TRACE_TICKS = 2400         # g_sched_trace capacity (must match workload_edf.c); 4 hyperperiods (lcm(40,60,100)=600)
 GANTT_WINDOW = 720         # ticks shown in the Gantt -- 3x the original 240 (>1 hyperperiod), rest of the 2400-tick capture is unshown
@@ -104,15 +103,16 @@ def _fs_str(status: int) -> str:
     return FAULT_FS.get(fs, f"FS=0b{fs:05b}")
 
 
-def fault_report(words: Sequence[int]) -> str | None:
+def fault_report(words: Sequence[int], core: int | None = None) -> str | None:
     if len(words) < 8 or words[0] != FAULT_MAGIC:
         return None
 
     _, vec, pc, spsr, dfsr, dfar, ifsr, ifar = words[:8]
     name = FAULT_VEC.get(vec, f"vec={vec}")
 
+    tag = f" (CPU{core})" if core is not None else ""
     lines = [
-        f"*** CPU FAULT: {name} ***",
+        f"*** CPU FAULT{tag}: {name} ***",
         f"  faulting PC = 0x{pc:08x}",
         f"  SPSR        = 0x{spsr:08x}  (mode 0x{spsr & 0x1f:02x})",
     ]
@@ -163,7 +163,7 @@ class EDFResult:
     ti_av: tuple[int, ...]      # EWMA inter-arrival cycles (~ period)
     ci: tuple[int, ...]         # last job's compute cycles (acute)
 
-    sched: Metric               # per-tick scheduler cost (g_metrics[SCHED_METRIC])
+    sched_overhead: tuple[int, ...]   # per-CPU EWMA scheduler cost, cycles (g_overhead_m)
 
     @property
     def requested_u(self) -> float:
@@ -275,6 +275,7 @@ class OCD:
         # CPU fault (bench/fault.c): breakpoint addr of fault_trap + addr of g_fault.
         self.fault_bp: int | None = None
         self.fault_addr: int | None = None
+        self.num_cpus: int = 1
 
         # Reuse an already-running daemon (e.g. started by openocd/ocd) rather than
         # spawning + SIGKILL-ing a fresh openocd -- the open/hard-kill churn is the
@@ -535,13 +536,20 @@ class OCD:
 
 
     def read_fault(self) -> str | None:
+        # g_fault is fault_record_t[NUM_CPUS] (8 u32 each); report every core that
+        # captured a fault. Physical read, so it works without a per-core target.
         if self.fault_addr is None:
             return None
         try:
-            words = self.read_words(self.fault_addr, 8)
+            words = self.read_words(self.fault_addr, 8 * self.num_cpus)
         except Exception:
             return None
-        return fault_report(words)
+        reports = [
+            r
+            for core in range(self.num_cpus)
+            if (r := fault_report(words[core * 8 : core * 8 + 8], core))
+        ]
+        return "\n".join(reports) if reports else None
 
 
     # -------------------------------------------------------------------------
@@ -706,6 +714,7 @@ def collect_edf_trial(
     ocd: OCD,
     symbols: dict[str, int],
     periods: tuple[int, ...],
+    num_cpus: int,
 ) -> EDFResult:
 
     ticks = ocd.read_u32(
@@ -750,7 +759,10 @@ def collect_edf_trial(
     ci_av = tuple(m[1] for m in mets)   # metrics_t.ci_av
     ti_av = tuple(m[5] for m in mets)   # metrics_t.ti_av
 
-    sched = read_metric(ocd, symbols["g_metrics"], SCHED_METRIC)
+    # Per-CPU scheduler overhead EWMA (g_overhead_m[num_cpus], uncached mirror).
+    sched_overhead = tuple(
+        ocd.read_words(symbols["g_overhead_m"], num_cpus)
+    )
 
     return EDFResult(
         index=ocd.read_u32(
@@ -776,7 +788,7 @@ def collect_edf_trial(
         ti_av=ti_av,
         ci=ci,
 
-        sched=sched,
+        sched_overhead=sched_overhead,
     )
 
 
@@ -816,7 +828,7 @@ def print_edf_header() -> None:
         f"{'measU':>6} "
         f"{'ticks':>8} "
         f"{'miss':>8} "
-        f"{'sched':>7}   "
+        f"{'sched c/c':>10}   "
         f"per-task measured U (ci_av/ti_av)"
     )
 
@@ -836,7 +848,7 @@ def print_edf_result(
         f"{result.measured_u:>6.3f} "
         f"{result.ticks:>8} "
         f"{result.misses:>8} "
-        f"{result.sched.mean:>7} "
+        f"{'/'.join(map(str, result.sched_overhead)):>10} "
         f"  {per_task}"
     )
 
@@ -951,9 +963,8 @@ def write_edf_csv(
                 "ticks",
                 "misses",
 
-                "sched_mean_cyc",
-                "sched_min_cyc",
-                "sched_max_cyc",
+                "sched_overhead_c0_cyc",
+                "sched_overhead_c1_cyc",
 
                 "C0",
                 "C1",
@@ -992,9 +1003,8 @@ def write_edf_csv(
                     result.ticks,
                     result.misses,
 
-                    result.sched.mean,
-                    result.sched.minimum,
-                    result.sched.maximum,
+                    result.sched_overhead[0],
+                    result.sched_overhead[1] if len(result.sched_overhead) > 1 else 0,
 
                     *result.c,
                     *result.periods,
@@ -1165,8 +1175,11 @@ def plot_edf(
     requested = [result.requested_u   for result in rows]
     misses    = [result.misses        for result in rows]
     measured  = [result.measured_u    for result in rows]
-    cost_mean = [result.sched.mean    for result in rows]
-    cost_max  = [result.sched.maximum for result in rows]
+    n_cpus   = len(rows[0].sched_overhead) if rows else 1
+    overhead = [
+        [result.sched_overhead[c] for result in rows]
+        for c in range(n_cpus)
+    ]
 
     fig, (a1, a2, a3) = plt.subplots(
         3,
@@ -1182,11 +1195,11 @@ def plot_edf(
     a1.set_title("EDF: schedulability, scheduler cost, measured utilization")
     a1.grid(alpha=0.3)
 
-    # a2: scheduler cost per tick (next_thread bracketed by MEASURE_BEGIN/END).
-    a2.plot(requested, cost_mean, "o-", label="mean")
-    a2.plot(requested, cost_max, "x--", color="gray", alpha=0.6, label="max")
+    # a2: per-CPU scheduler overhead per tick (EWMA of next_thread cycles, g_overhead_m).
+    for c in range(n_cpus):
+        a2.plot(requested, overhead[c], "o-", label=f"CPU{c}")
     a2.axvline(1.0, linestyle="--")
-    a2.set_ylabel("scheduler cycles / tick")
+    a2.set_ylabel("scheduler cycles / tick (EWMA)")
     a2.legend()
     a2.grid(alpha=0.3)
 
@@ -1284,6 +1297,166 @@ def plot_gantt(
 # Main
 # =============================================================================
 
+def allocbench(ocd: OCD, symbols: dict[str, int]) -> list[Metric]:
+    # Arms its own breakpoint, runs to it, samples, leaves the target halted at
+    # ktrace_bp_alloc_done. Skip by commenting the call in main(): the firmware
+    # still runs allocbench_run() uninterrupted; the host just doesn't sample.
+    bp = symbols["ktrace_bp_alloc_done"]
+    ocd.add_hw_breakpoint(bp)
+    ocd.resume()
+    ocd.expect_breakpoint(bp, timeout=30.0)
+
+    metrics = collect_alloc(ocd, symbols["g_metrics"])
+    print_alloc(metrics)
+    return metrics
+
+
+def edf_test(
+    ocd: OCD,
+    symbols: dict[str, int],
+    num_cpus: int,
+    periods: tuple[int, ...],
+    u_values: tuple[int, ...],
+) -> tuple[list[EDFResult], dict[int, Sequence[int]]]:
+    # step/resume off wherever the target sits (bp_alloc if allocbench ran, else
+    # load) and drive the U sweep. bp_edf_ready/done are already armed by main().
+    ocd.continue_from_breakpoint()
+
+    bp_edf_ready = symbols["ktrace_bp_edf_ready"]
+    bp_edf_done  = symbols["ktrace_bp_edf_done"]
+
+    print_edf_header()
+
+    edf_results: list[EDFResult] = []
+    traces: dict[int, Sequence[int]] = {}
+
+    for trial, expected_u in enumerate(u_values):
+
+        ocd.expect_breakpoint(bp_edf_ready, timeout=30.0)
+
+        actual_index = ocd.read_u32(symbols["g_edf_u_index"])
+        actual_u     = ocd.read_u32(symbols["g_edf_u_permille"])
+
+        if actual_index != trial:
+            raise RuntimeError(
+                f"EDF trial mismatch: expected {trial}, got {actual_index}"
+            )
+        if actual_u != expected_u:
+            raise RuntimeError(
+                f"EDF U mismatch: expected {expected_u}, got {actual_u}"
+            )
+
+        ocd.continue_from_breakpoint()
+
+        time.sleep(EDF_SECONDS)
+
+        ocd.halt()
+
+        # Surface a fault on ANY core mid-sweep (g_fault[core], physical read).
+        fault = ocd.read_fault()
+        if fault:
+            raise RuntimeError(fault)
+
+        result = collect_edf_trial(ocd, symbols, periods, num_cpus)
+
+        if result.index != trial:
+            raise RuntimeError(
+                f"EDF trial changed during measurement: "
+                f"expected {trial}, got {result.index}"
+            )
+        if result.u_permille != expected_u:
+            raise RuntimeError(
+                f"EDF U changed during measurement: "
+                f"expected {expected_u}, got {result.u_permille}"
+            )
+
+        edf_results.append(result)
+        print_edf_result(result)
+
+        trace_len = min(
+            ocd.read_u32(symbols["g_trace_len"]),
+            TRACE_TICKS,
+        )
+        if trace_len:
+            traces[result.u_permille] = ocd.read_bytes(
+                symbols["g_sched_trace"],
+                trace_len,
+            )
+
+        ocd.write_u32(symbols["g_test_release"], 1)
+        ocd.resume()
+        time.sleep(0.05)
+
+        ocd.halt()
+        if ocd.pc() != bp_edf_ready:
+            ocd.resume()
+
+        ocd.resume()
+
+    ocd.expect_breakpoint(bp_edf_done, timeout=30.0)
+    return edf_results, traces
+
+
+def write_artifacts(
+    outdir: Path,
+    alloc_metrics: list[Metric],
+    edf_results: list[EDFResult],
+    traces: dict[int, Sequence[int]],
+    periods: tuple[int, ...],
+) -> None:
+    # Guarded per phase: a skipped phase leaves its list empty and is simply not
+    # written, so you can run either phase alone.
+    if alloc_metrics:
+        write_alloc_csv(outdir / "alloc.csv", alloc_metrics[:4])
+        write_cache_csv(outdir / "cache_workloads.csv", alloc_metrics)
+        plot_alloc(alloc_metrics[:4], outdir / "alloc_timing.png")
+        plot_cache(alloc_metrics, outdir / "cache_workloads.png")
+
+    if not edf_results:
+        return
+
+    write_edf_csv(outdir / "edf_sweep.csv", edf_results)
+    plot_edf(edf_results, outdir / "edf_sweep.png")
+
+    result_by_u = {r.u_permille: r for r in edf_results}
+    swept_us    = sorted(result_by_u)
+    no_miss_us  = [u for u in swept_us if result_by_u[u].misses == 0]
+    miss_us     = [u for u in swept_us if result_by_u[u].misses > 0]
+
+    gantt_labels: dict[int, list[str]] = {}
+    if COMFORTABLE_U in result_by_u:
+        gantt_labels.setdefault(COMFORTABLE_U, []).append("comfortable")
+    if no_miss_us:
+        gantt_labels.setdefault(max(no_miss_us), []).append("last no-miss")
+    if miss_us:
+        gantt_labels.setdefault(min(miss_us), []).append("first miss")
+    if swept_us:
+        gantt_labels.setdefault(max(swept_us), []).append("max U")
+
+    for u_permille in sorted(gantt_labels):
+        trace = traces.get(u_permille)
+        if trace is None:
+            continue
+        plot_gantt(
+            trace,
+            periods,
+            outdir / f"edf_schedule_u{u_permille / 1000:.3f}.png",
+            u_permille,
+            u_configured=result_by_u[u_permille].configured_u,
+            task_u=result_by_u[u_permille].measured_u_per_task,
+            label=" / ".join(gantt_labels[u_permille]),
+        )
+
+    clean = [r for r in edf_results if r.misses == 0]
+    if clean:
+        knee = max(clean, key=lambda r: r.configured_u)
+        print(
+            f"\nU* = {knee.configured_u:.3f} "
+            f"(requested {knee.requested_u:.3f}, "
+            f"measured {knee.measured_u:.3f})"
+        )
+
+
 def main(bootable: bool = False) -> None:
 
     if not TEST_ELF.exists():
@@ -1296,6 +1469,9 @@ def main(bootable: bool = False) -> None:
         TEST_ELF
     )
 
+    # Per-CPU mirror count follows the firmware NUM_CPUS (ENABLE_SMP): 2 cores or 1.
+    num_cpus = 2 if symbols.get("_cfg_enable_smp") else 1
+
 
     require_symbols(
         symbols,
@@ -1307,6 +1483,7 @@ def main(bootable: bool = False) -> None:
 
             "g_ticks_m",
             "g_misses_m",
+            "g_overhead_m",
 
             "g_edf_u_values",
             "g_edf_u_count",
@@ -1336,10 +1513,6 @@ def main(bootable: bool = False) -> None:
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
-
-    bp_alloc = (
-        symbols["ktrace_bp_alloc_done"]
-    )
 
     bp_edf_ready = (
         symbols["ktrace_bp_edf_ready"]
@@ -1373,7 +1546,11 @@ def main(bootable: bool = False) -> None:
     )
 
 
+    # Empty until each phase runs; a commented-out phase stays empty and is simply
+    # not written by write_artifacts().
+    alloc_metrics: list[Metric] = []
     edf_results: list[EDFResult] = []
+    traces: dict[int, Sequence[int]] = {}
 
 
     with OCD() as ocd:
@@ -1441,338 +1618,45 @@ def main(bootable: bool = False) -> None:
         )
 
 
-        # ---------------------------------------------------------------------
-        # Install semantic hardware breakpoints
-        # ---------------------------------------------------------------------
-
-        # Let the halt/timeout paths decode a CPU fault instead of reporting a
-        # bare timeout (bench/fault.c: fault_trap marker + g_fault record).
-        ocd.fault_bp = bp_fault
+        # Fault decode on any halt/timeout (bench/fault.c: fault_trap + g_fault[]).
+        ocd.fault_bp   = bp_fault
         ocd.fault_addr = symbols["g_fault"]
+        ocd.num_cpus   = num_cpus
 
-        ocd.add_hw_breakpoint(
-            bp_alloc
-        )
+        # Always-armed markers: EDF ready/done + the fault trap. allocbench() arms
+        # its own bp_alloc. No resume here -- each phase drives its own run-control.
+        ocd.add_hw_breakpoint(bp_edf_ready)
+        ocd.add_hw_breakpoint(bp_edf_done)
+        ocd.add_hw_breakpoint(bp_fault)
 
-        ocd.add_hw_breakpoint(
-            bp_edf_ready
-        )
-
-        ocd.add_hw_breakpoint(
-            bp_edf_done
-        )
-
-        ocd.add_hw_breakpoint(
-            bp_fault
-        )
-
-
-        # ---------------------------------------------------------------------
-        # Boot
-        #
-        # --bootable: release the self-boot gate (firmware spins in
-        # ktrace_wait_boot until g_boot_release != 0), then it runs c_startup()
-        # and the tests exactly as the JTAG-loaded path does.
-        # ---------------------------------------------------------------------
-
+        # Release the self-boot gate (JTAG-loaded path leaves it unused).
         if bootable:
             ocd.write_u32(symbols["g_boot_release"], 1)
 
-        ocd.resume()
+
+        # -----------------------------------------------------------------
+        # Control panel -- comment a phase to skip it (also comment its call
+        # in main.c so the firmware skips it too).
+        # -----------------------------------------------------------------
+        # alloc_metrics = allocbench(ocd, symbols)
 
 
-        # =====================================================================
-        # Allocator benchmark
-        # =====================================================================
-
-        ocd.expect_breakpoint(
-            bp_alloc,
-            timeout=30.0,
-        )
-
-
-        alloc_metrics = collect_alloc(
+        edf_results, traces = edf_test(
             ocd,
-            symbols["g_metrics"],
-        )
-
-
-        print_alloc(
-            alloc_metrics
-        )
-
-
-        # Step over the allocator breakpoint and continue into EDF.
-        ocd.continue_from_breakpoint()
-
-
-        # =====================================================================
-        # EDF sweep
-        # =====================================================================
-
-        print_edf_header()
-
-
-        traces: dict[int, Sequence[int]] = {}   # u_permille -> schedule trace
-
-
-        for (
-            trial,
-            expected_u,
-        ) in enumerate(u_values):
-
-            # -----------------------------------------------------------------
-            # Target has configured this U and reached ktrace_bp_edf_ready.
-            # -----------------------------------------------------------------
-
-            ocd.expect_breakpoint(
-                bp_edf_ready,
-                timeout=30.0,
-            )
-
-
-            actual_index = ocd.read_u32(
-                symbols["g_edf_u_index"]
-            )
-
-
-            actual_u = ocd.read_u32(
-                symbols["g_edf_u_permille"]
-            )
-
-
-            if actual_index != trial:
-                raise RuntimeError(
-                    f"EDF trial mismatch: "
-                    f"expected {trial}, "
-                    f"got {actual_index}"
-                )
-
-
-            if actual_u != expected_u:
-                raise RuntimeError(
-                    f"EDF U mismatch: "
-                    f"expected {expected_u}, "
-                    f"got {actual_u}"
-                )
-
-
-            # Step over ready breakpoint.
-            # Firmware then enters KTRACE_WAIT_RELEASE().
-            ocd.continue_from_breakpoint()
-
-
-            # -----------------------------------------------------------------
-            # Measurement window
-            # -----------------------------------------------------------------
-
-            time.sleep(
-                EDF_SECONDS
-            )
-
-
-            # -----------------------------------------------------------------
-            # Freeze exact target state
-            # -----------------------------------------------------------------
-
-            ocd.halt()
-
-
-            result = collect_edf_trial(
-                ocd,
-                symbols,
-                periods,
-            )
-
-
-            if result.index != trial:
-                raise RuntimeError(
-                    f"EDF trial changed during measurement: "
-                    f"expected {trial}, "
-                    f"got {result.index}"
-                )
-
-
-            if result.u_permille != expected_u:
-                raise RuntimeError(
-                    f"EDF U changed during measurement: "
-                    f"expected {expected_u}, "
-                    f"got {result.u_permille}"
-                )
-
-
-            edf_results.append(
-                result
-            )
-
-
-            print_edf_result(
-                result
-            )
-
-
-            # -----------------------------------------------------------------
-            # Capture this trial's schedule trace. Every trial is traced; we
-            # keep them all and choose which to plot once the sweep's miss
-            # pattern is known. Target is halted, so the JTAG read is coherent.
-            # -----------------------------------------------------------------
-
-            trace_len = min(
-                ocd.read_u32(symbols["g_trace_len"]),
-                TRACE_TICKS,
-            )
-
-            if trace_len:
-                traces[result.u_permille] = ocd.read_bytes(
-                    symbols["g_sched_trace"],
-                    trace_len,
-                )
-
-
-            # -----------------------------------------------------------------
-            # Release current trial.
-            #
-            # Target is halted, so JTAG RAM write is valid.
-            # -----------------------------------------------------------------
-
-            ocd.write_u32(
-                symbols["g_test_release"],
-                1,
-            )
-
-            ocd.resume()
-
-            time.sleep(0.05)
-
-            
-            ocd.halt()
-            probe_pc = ocd.pc()
-
-            if probe_pc != bp_edf_ready:
-                ocd.resume()
-
-
-            ocd.resume()
-
-
-        # =====================================================================
-        # Final target-generated breakpoint
-        # =====================================================================
-
-        ocd.expect_breakpoint(
-            bp_edf_done,
-            timeout=30.0,
-        )
-
-
-    # =========================================================================
-    # Artifacts
-    # =========================================================================
-
-    write_alloc_csv(
-        outdir / "alloc.csv",
-        alloc_metrics[:4],                 # malloc / free / *_loaded
-    )
-
-
-    write_cache_csv(
-        outdir / "cache_workloads.csv",
-        alloc_metrics,                     # picks out mem_walk_8k + matmul_32 by name
-    )
-
-
-    write_edf_csv(
-        outdir / "edf_sweep.csv",
-        edf_results,
-    )
-
-
-    plot_alloc(
-        alloc_metrics[:4],                 # malloc / free / *_loaded -- same ~2k scale
-        outdir / "alloc_timing.png",
-    )
-
-
-    plot_cache(
-        alloc_metrics,                     # picks out mem_walk_8k + matmul_32 by name
-        outdir / "cache_workloads.png",
-    )
-
-
-    plot_edf(
-        edf_results,
-        outdir / "edf_sweep.png",
-    )
-
-
-    # Gantt charts at the schedulability transition, not a fixed U: the highest
-    # utilization that still met every deadline, the lowest that missed one, and
-    # the top of the sweep. These are only known once all misses are collected.
-    result_by_u = {r.u_permille: r for r in edf_results}
-    swept_us = sorted(result_by_u)
-
-    no_miss_us = [u for u in swept_us if result_by_u[u].misses == 0]
-    miss_us    = [u for u in swept_us if result_by_u[u].misses > 0]
-
-    gantt_labels: dict[int, list[str]] = {}   # u_permille -> chart labels (deduped)
-
-    if COMFORTABLE_U in result_by_u:
-        gantt_labels.setdefault(COMFORTABLE_U, []).append("comfortable")
-
-    if no_miss_us:
-        gantt_labels.setdefault(max(no_miss_us), []).append("last no-miss")
-
-    if miss_us:
-        gantt_labels.setdefault(min(miss_us), []).append("first miss")
-
-    if swept_us:
-        gantt_labels.setdefault(max(swept_us), []).append("max U")
-
-    for u_permille in sorted(gantt_labels):
-        trace = traces.get(u_permille)
-
-        if trace is None:
-            continue
-
-        plot_gantt(
-            trace,
+            symbols,
+            num_cpus,
             periods,
-            outdir / f"edf_schedule_u{u_permille / 1000:.3f}.png",
-            u_permille,
-            u_configured=result_by_u[u_permille].configured_u,
-            task_u=result_by_u[u_permille].measured_u_per_task,
-            label=" / ".join(gantt_labels[u_permille]),
+            u_values,
         )
 
 
-    # =========================================================================
-    # U*
-    # =========================================================================
-
-    clean = [
-        result
-        for result in edf_results
-        if result.misses == 0
-    ]
-
-
-    if clean:
-
-        knee = max(
-            clean,
-            key=lambda result:
-                result.configured_u,
-        )
-
-
-        print(
-            f"\nU* = "
-            f"{knee.configured_u:.3f} "
-            f"(requested "
-            f"{knee.requested_u:.3f}, "
-            f"measured {knee.measured_u:.3f})"
-        )
-
+    write_artifacts(
+        outdir,
+        # alloc_metrics,
+        edf_results,
+        traces,
+        periods,
+    )
 
     print(
         f"\nPASS   artifacts in "

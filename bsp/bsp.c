@@ -377,4 +377,5 @@ void cpu1_startup(void)
     cpu1_gic_init();
     cpu1_timer_start();
     pmu_init();
+    psched_init();
 }

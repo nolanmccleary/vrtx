@@ -34,10 +34,8 @@ typedef struct
 }   metric_t;
 
 
-#define METRIC_SLOTS  8   /* allocbench uses 0..6 (malloc..matmul); slot 7 = scheduler */
-
-/* g_metrics slot 7: per-tick scheduler cost, bracketed around next_thread. */
-#define SCHED_METRIC  7
+#define METRIC_SLOTS  8   /* allocbench uses 0..6 (malloc..matmul); slot 7 now unused
+                             (scheduler cost moved to per-CPU g_cpus[].avg_overhead) */
 
 
 extern metric_t g_metrics[METRIC_SLOTS];

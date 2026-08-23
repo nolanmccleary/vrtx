@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "system.h"
 #include "thread.h"
+#include "cpu.h"
 
 
 
@@ -16,8 +17,8 @@ typedef struct
 
 
 
-extern uint32_t gTicks;
-extern uint32_t gMissedDeadlines;
+extern uint32_t gTicks[NUM_CPUS];
+extern uint32_t gMissedDeadlines[NUM_CPUS];
 
 
 sys_exit_e psched_init(void);

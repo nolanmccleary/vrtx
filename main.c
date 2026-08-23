@@ -25,7 +25,7 @@ void main(void)
 {
 
 #if defined(MODE_TEST)
-    allocbench_run();
+    // allocbench_run();
     edf_run();
 #endif
 

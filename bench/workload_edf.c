@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "cpu.h"
 #include "ktrace.h"
 #include "pmu.h"
 #include "preempt_sched.h"
@@ -68,8 +69,9 @@ static uint32_t iters[NTASKS];
  * ktrace_edf_tick, so the debugger reads coherent values without the CPU paying
  * for uncached access on the hot paths. */
 HOST_SHARED metrics_t g_edf_metrics[NTASKS];   /* <- running->metrics (cached thread_t)  */
-HOST_SHARED uint32_t  g_ticks_m;               /* <- gTicks (cached scheduler counter)   */
-HOST_SHARED uint32_t  g_misses_m;              /* <- gMissedDeadlines                     */
+HOST_SHARED uint32_t  g_ticks_m[NUM_CPUS];
+HOST_SHARED uint32_t  g_misses_m[NUM_CPUS];
+HOST_SHARED uint32_t  g_overhead_m[NUM_CPUS];
 
 
 
@@ -146,26 +148,26 @@ void ktrace_edf_tick(thread_t* running)
 {
     if (!trace_active) return;
 
-    int idx = trace_idx(running);
+    cpu_e core = curr_core();
 
-    /* Gantt: bounded window (first TRACE_TICKS ticks of the trial). */
-    if (g_trace_len < TRACE_TICKS)
+    if (core == CPU0)
     {
-        g_sched_trace[g_trace_len++] = (uint8_t)idx;
+        int idx = trace_idx(running);
+
+        if (g_trace_len < TRACE_TICKS)
+        {
+            g_sched_trace[g_trace_len++] = (uint8_t)idx;
+        }
+
+        if (idx < (int)NTASKS)
+        {
+            g_edf_metrics[idx] = running->metrics;
+        }
     }
 
-    /* Metrics mirror: EVERY tick for the whole trial, so the host reads current
-     * ci_av/ti_av at the (late, ~12000-tick) halt -- must NOT be gated by the
-     * gantt cap. Idle (idx == NTASKS) has no task slot. */
-    if (idx < (int)NTASKS)
-    {
-        g_edf_metrics[idx] = running->metrics;
-    }
-
-    /* Clone the cached, system-owned counters into their host_shared mirrors so
-     * the debugger reads them coherently once OCRAM .bss is cacheable. */
-    g_ticks_m  = gTicks;
-    g_misses_m = gMissedDeadlines;
+    g_ticks_m[core]    = gTicks[core];
+    g_misses_m[core]   = gMissedDeadlines[core];
+    g_overhead_m[core] = g_cpus[core].avg_overhead;
 }
 
 
@@ -177,7 +179,7 @@ void ktrace_edf_tick(thread_t* running)
 // returns current gTicks value
 static inline uint32_t rd_ticks(void)
 {
-    return *(volatile uint32_t*)&gTicks;
+    return *(volatile uint32_t*)&gTicks[curr_core()];
 }
 
 
@@ -251,14 +253,17 @@ static void configure_work(uint32_t u_permille, uint32_t cycles_per_tick, uint32
 
 static void reset_trial(void)
 {
-    gTicks = 0u;
-    gMissedDeadlines = 0u;
+    gTicks[curr_core()] = 0u;
+    gMissedDeadlines[curr_core()] = 0u;
 
 
     g_trace_len    = 0u;
     trace_active   = 1u;   /* trace every trial; the host reads each one and picks which to plot */
 
-    metric_reset(SCHED_METRIC);   /* fresh scheduler-cost distribution per trial */
+    for (uint32_t c = 0; c < NUM_CPUS; c++)
+    {
+        g_cpus[c].avg_overhead = 0u;   /* fresh per-CPU scheduler-overhead EWMA per trial */
+    }
 
 
     for (uint32_t i = 0; i < NTASKS; i++)
@@ -280,8 +285,20 @@ void edf_run(void)
     /*
      * allocbench destroyed its heap before returning.
      */
-    heap_init();
-    psched_init();
+    // heap_init();
+    // psched_init();
+
+    for (uint32_t c = 0; c < NUM_CPUS; c++)
+    {
+        g_ticks_m[c]    = 0u;
+        g_misses_m[c]   = 0u;
+        g_overhead_m[c] = 0u;
+    }
+
+    for (uint32_t i = 0; i < NTASKS; i++)
+    {
+        g_edf_metrics[i] = (metrics_t){0};
+    }
 
 
     uint32_t cycles_per_tick = measure_cycles_per_tick();

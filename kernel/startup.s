@@ -185,11 +185,18 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
-@; set cpu1 vector and enable
+@; SET CPU1 VBAR, CLEAR MAILBOX AND READY, RELEASE CPU1
 .if ENABLE_SMP != 0
     ldr r0, =SYSMGR_ROMCODE_CPU1STARTADDR
     ldr r1, =_reset_handler
     str r1, [r0]                        @; cpu1startaddr = &_reset_handler (CPU1 re-enters, forks on MPIDR)
+
+
+    @;  mailbox is not zero-initialized by default
+    ldr r0, =g_cpu_mailbox
+    mov r1, #0
+    str r1, [r0]
+
 
     ldr r0, =g_cpu1_ready
     mov r1, #0
@@ -204,7 +211,8 @@ bss_zero:
 .if BOOT_TEST != 0
     bl ktrace_wait_boot
 .endif
-    bl cpu0_startup
+    bl cpu0_startup         @; RUN CP0 STARTUP AND SET MAILBOX
+    cpsie i
     ldr r0, =g_cpu_mailbox
     mov r1, #1
     str r1, [r0]
@@ -224,7 +232,8 @@ _cpu1_fork:
         str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
         dsb
         ldr r0, =g_cpu_mailbox 
-        
+
+        wfe
         1:  ldr r1, [r0]
             cmp r1, #0
             bne engage
@@ -233,6 +242,7 @@ _cpu1_fork:
 
         engage:
             bl cpu1_startup
+            cpsie i
             bl cpu1_main
 .endif
     

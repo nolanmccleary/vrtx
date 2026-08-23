@@ -1,7 +1,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "aux.h"
-#include "preempt_sched.h" 
+#include "cpu.h"
+#include "pmu.h"
+#include "preempt_sched.h"
 #include "tlsf.h"
 #include "system.h"
 #include "thread.h"
@@ -12,26 +14,28 @@
 
 
 
-static bool sched_init = false;
+static bool sched_init[NUM_CPUS];
 
 
-static heap_t heap1;
-static heap_t heap2;
+static heap_t heap1[NUM_CPUS];
+static heap_t heap2[NUM_CPUS];
 
-static heap_t* deadHeap;
-static heap_t* relHeap;
+static heap_t* deadHeap[NUM_CPUS];
+static heap_t* relHeap[NUM_CPUS];
 
-static thread_t* curr_thread;
-static thread_t* main_thread;
+static thread_t* curr_thread[NUM_CPUS];
+static thread_t* main_thread[NUM_CPUS];
 
 
-static deque_t* incomingThreads;
+static deque_t* incomingThreads[NUM_CPUS];
 
 
 static void thread_exit()
 {
-    curr_thread->thread_status = FINISHED;
-    switch_out(curr_thread);
+    cpu_e core = curr_core();
+
+    curr_thread[core]->thread_status = FINISHED;
+    switch_out(curr_thread[core]);
     for (;;) {};
 }
 
@@ -74,8 +78,8 @@ static inline void prime_thread(thread_t* thread)
 
 
 
-uint32_t gTicks;
-uint32_t gMissedDeadlines;
+uint32_t gTicks[NUM_CPUS];
+uint32_t gMissedDeadlines[NUM_CPUS];
 
 
 
@@ -92,22 +96,27 @@ sys_exit_e psched_init()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    gTicks = 0;
-    gMissedDeadlines = 0;
+    char* sp;
+    __asm__ __volatile__ ("mov %0, sp" : "=r"(sp));
 
-    deadHeap = &heap1;
-    relHeap = &heap2;
-
-    incomingThreads = initialize_deque();
-
-    main_thread = (thread_t*)kMalloc(sizeof(thread_t));
-    main_thread->thread_status = RUNNING;
-
-    __asm__ __volatile__ ("mov %0, sp" : "=r"(main_thread->sp));
     
-    curr_thread = main_thread;
+    cpu_e core = curr_core();
 
-    sched_init = true;
+    gTicks[core] = 0;
+    gMissedDeadlines[core] = 0;
+
+    deadHeap[core] = &heap1[core];
+    relHeap[core] = &heap2[core];
+
+    incomingThreads[core] = initialize_deque();
+
+    main_thread[core] = (thread_t*)kMalloc(sizeof(thread_t));
+    main_thread[core]->thread_status = RUNNING;
+    main_thread[core]->sp = sp;
+
+    curr_thread[core] = main_thread[core];
+
+    sched_init[core] = true;
 
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
@@ -116,28 +125,30 @@ sys_exit_e psched_init()
 }
 
 
+
 //TODO: May want to make this only callable from main
 sys_exit_e psched_deinit()
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    destroy_deque(incomingThreads);
 
+    cpu_e core = curr_core();
 
-    for (size_t i = 0; i < deadHeap->curr_index; i++)
+    destroy_deque(incomingThreads[core]);
+
+    for (size_t i = 0; i < deadHeap[core]->curr_index; i++)
     {
-        if (deadHeap->heap[i].thread != NULL) kFree(deadHeap->heap[i].thread);
+        if (deadHeap[core]->heap[i].thread != NULL) kFree(deadHeap[core]->heap[i].thread);
     }
 
-    for (size_t i = 0; i < relHeap->curr_index; i++)
+    for (size_t i = 0; i < relHeap[core]->curr_index; i++)
     {
-        if (relHeap->heap[i].thread != NULL) kFree(relHeap->heap[i].thread);
+        if (relHeap[core]->heap[i].thread != NULL) kFree(relHeap[core]->heap[i].thread);
     }
 
+    kFree(main_thread[core]);
 
-    kFree(main_thread);
-
-    sched_init = false;
+    sched_init[core] = false;
 
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
@@ -149,6 +160,8 @@ sys_exit_e psched_deinit()
 
 sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, thread_handle_t* handle)
 {
+    cpu_e core = curr_core();
+
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
     new_thread->period = period;
     new_thread->periodicity = periodicity;
@@ -156,7 +169,7 @@ sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodic
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
 
-    push_back(incomingThreads, (char*)(new_thread), sizeof(thread_t));
+    push_back(incomingThreads[core], (char*)(new_thread), sizeof(thread_t));
 
     init_metrics(new_thread);
 
@@ -167,14 +180,15 @@ sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodic
 
 
 
-
 sys_exit_e kill_thread(thread_handle_t* handle)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
+    cpu_e core = curr_core();
+
     handle->thread->periodicity = APERIODIC;
     handle->thread->thread_status = FINISHED;
-    if (handle->thread == curr_thread)
+    if (handle->thread == curr_thread[core])
     {
         next_thread();
     }
@@ -189,31 +203,33 @@ sys_exit_e kill_thread(thread_handle_t* handle)
 
 sys_exit_e psched_clear_threads(void)
 {
+    cpu_e core = curr_core();
+
     thread_t *thread;
 
-    while (incomingThreads->size > 0)
+    while (incomingThreads[core]->size > 0)
     {
         size_t size;
-        pop_front(incomingThreads, (char**)&thread, &size);
-        if (thread != NULL) 
-            kFree(thread);
-    }
-
-    while (deadHeap->curr_index > 0)
-    {
-        pop_heap(deadHeap, &thread);
-        if (thread != NULL) 
-            kFree(thread);
-    }
-
-    while (relHeap->curr_index > 0)
-    {
-        pop_heap(relHeap, &thread);
+        pop_front(incomingThreads[core], (char**)&thread, &size);
         if (thread != NULL)
             kFree(thread);
     }
 
-    curr_thread = main_thread;
+    while (deadHeap[core]->curr_index > 0)
+    {
+        pop_heap(deadHeap[core], &thread);
+        if (thread != NULL)
+            kFree(thread);
+    }
+
+    while (relHeap[core]->curr_index > 0)
+    {
+        pop_heap(relHeap[core], &thread);
+        if (thread != NULL)
+            kFree(thread);
+    }
+
+    curr_thread[core] = main_thread[core];
 
     return SYS_OK;
 }
@@ -221,25 +237,24 @@ sys_exit_e psched_clear_threads(void)
 
 
 
-
-
-
 inline void next_thread()
 {
+    uint32_t overhead = pmu_cycles();
+    cpu_e core = curr_core();
 
-    if (sched_init)
+
+    if (sched_init[core])
     {
-        KTRACE_SCHED_BEGIN();   /* test-only: start per-tick scheduler-cost timer */
 
-        if (curr_thread->thread_status == RUNNING) switch_out(curr_thread);
+        if (curr_thread[core]->thread_status == RUNNING) switch_out(curr_thread[core]);
 
-        gTicks++;
+        gTicks[core]++;
 
         __asm__ __volatile__ (
             "cps #0x1F\n"
             "mov %0, sp\n"
             "cps #0x13\n"
-            : "=r"(curr_thread->sp)
+            : "=r"(curr_thread[core]->sp)
         );
 
 
@@ -253,14 +268,14 @@ inline void next_thread()
         */
         if (KTRACE_RELEASE_PENDING())
         {
-            curr_thread = main_thread;
+            curr_thread[core] = main_thread[core];
 
             __asm__ __volatile__ (
                 "cps #0x1F\n"
                 "mov sp, %0\n"
                 "cps #0x13\n"
                 :
-                : "r"(main_thread->sp)
+                : "r"(main_thread[core]->sp)
                 : "memory"
             );
 
@@ -270,52 +285,52 @@ inline void next_thread()
 
         thread_t* thread;
 
-        while(incomingThreads->size > 0)
+        while(incomingThreads[core]->size > 0)
         {
             size_t a;
-            pop_front(incomingThreads, (char**)(&thread), &a);
+            pop_front(incomingThreads[core], (char**)(&thread), &a);
 
-            thread->release_time = gTicks;
-            thread->deadline = gTicks + thread->period;
+            thread->release_time = gTicks[core];
+            thread->deadline = gTicks[core] + thread->period;
             thread->dirty = false;
             thread->thread_status = PENDING;
 
-            insert_node(deadHeap, thread, thread->deadline);
+            insert_node(deadHeap[core], thread, thread->deadline);
         }
 
 
         bool thread_found = false;
 
-        while (relHeap->curr_index > 0 && geq_wrapped(gTicks, relHeap->heap[0].thread->release_time))
+        while (relHeap[core]->curr_index > 0 && geq_wrapped(gTicks[core], relHeap[core]->heap[0].thread->release_time))
         {
-            pop_heap(relHeap, &thread);
+            pop_heap(relHeap[core], &thread);
             thread->dirty = false;
             thread->thread_status = PENDING;
-            insert_node(deadHeap, thread, thread->deadline);
+            insert_node(deadHeap[core], thread, thread->deadline);
         }
 
 
-        while(deadHeap->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
+        while(deadHeap[core]->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
         {
-            thread = deadHeap->heap[0].thread;
+            thread = deadHeap[core]->heap[0].thread;
 
             if (thread->thread_status == FINISHED)
             {
-                pop_heap(deadHeap, &thread);
+                pop_heap(deadHeap[core], &thread);
 
                 if (thread->periodicity == PERIODIC)
                 {
-                    do 
+                    do
                     {
                         thread->deadline += thread->period;
-                    }   while (thread->deadline <= gTicks);
+                    }   while (thread->deadline <= gTicks[core]);
 
-                    do 
+                    do
                     {
                         thread->release_time += thread->period;
                     }   while (thread->release_time < thread->deadline - thread->period);
 
-                    if (geq_wrapped(gTicks, thread->release_time)) //Will nominally fire on equality
+                    if (geq_wrapped(gTicks[core], thread->release_time)) //Will nominally fire on equality
                     {
                         thread->dirty = false;
                         thread->thread_status = PENDING;
@@ -323,12 +338,12 @@ inline void next_thread()
 
                     else //Add to release heap
                     {
-                        insert_node(relHeap, thread, thread->release_time);
+                        insert_node(relHeap[core], thread, thread->release_time);
                     }
 
                 }
 
-                else 
+                else
                 {
                     kFree(thread);
                     continue;
@@ -338,13 +353,13 @@ inline void next_thread()
 
             if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
             {
-                if (geq_wrapped(gTicks, thread->deadline) && !thread->dirty)
+                if (geq_wrapped(gTicks[core], thread->deadline) && !thread->dirty)
                 {
                     thread->dirty = true;
-                    gMissedDeadlines++;
+                    gMissedDeadlines[core]++;
                 }
 
-                curr_thread = thread;
+                curr_thread[core] = thread;
                 thread_found = true;
                 break;
             }
@@ -353,20 +368,19 @@ inline void next_thread()
 
         if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
         {
-            curr_thread = main_thread;
+            curr_thread[core] = main_thread[core];
         }
 
 
-        switch_in(curr_thread);
+        switch_in(curr_thread[core]);
 
-        KTRACE_SCHED_END();   /* test-only: fold this tick's scheduler cost into g_metrics[SCHED_METRIC] */
 
-        KTRACE_TICK_EXIT(curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
+        KTRACE_TICK_EXIT(curr_thread[core]);   /* test-only per-tick hook (Gantt + metrics mirror) */
 
-        switch (curr_thread->thread_status)
+        switch (curr_thread[core]->thread_status)
         {
             case PENDING:
-                prime_thread(curr_thread);
+                prime_thread(curr_thread[core]);
                 /* fall through */
 
             case RUNNING:
@@ -375,7 +389,7 @@ inline void next_thread()
                     "mov sp, %0\n"
                     "cps #0x13\n"
                     :
-                    : "r"(curr_thread->sp)
+                    : "r"(curr_thread[core]->sp)
                 );
                 break;
 
@@ -383,6 +397,9 @@ inline void next_thread()
                 break;
         }
     }
+
+
+
+    overhead = pmu_cycles() - overhead;
+    update_cpu_metrics(core, overhead);
 }
-
-

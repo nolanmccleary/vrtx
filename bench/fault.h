@@ -2,6 +2,7 @@
 #define FAULT_H
 
 #include <stdint.h>
+#include "cpu.h"
 
 /*
  * Software fault capture. On any synchronous CPU exception the asm handlers
@@ -39,7 +40,7 @@ typedef struct
     uint32_t ifar;    /* instruction fault address (valid for FAULT_PREFETCH) */
 }   fault_record_t;
 
-extern fault_record_t g_fault;
+extern fault_record_t g_fault[NUM_CPUS];
 
 void fault_capture(uint32_t pc, uint32_t spsr, uint32_t vec);  /* fill g_fault from CP15 */
 void fault_trap(void);                                          /* host breakpoint marker */

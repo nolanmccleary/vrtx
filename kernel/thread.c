@@ -1,8 +1,8 @@
 #include "thread.h"
 #include "pmu.h"
+#include "system.h"
 
 
-#define ALPHA 2
 
 
 void init_metrics(thread_t* thread)

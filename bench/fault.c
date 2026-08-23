@@ -1,9 +1,10 @@
 #include "fault.h"
+#include "cpu.h"
 #include "boot.h"   /* RSTMGR_PERMODRST */
 
 
 /* Lives in the merged host-shared NOLOAD OCRAM region (linker .fault input). */
-fault_record_t g_fault __attribute__((section(".fault"), used));
+fault_record_t g_fault[NUM_CPUS] __attribute__((section(".fault"), used));
 
 
 /* CP15 fault status/address registers (ARMv7-A). */
@@ -15,16 +16,18 @@ static inline uint32_t rd_ifar(void) { uint32_t v; __asm__ volatile("mrc p15,0,%
 
 void fault_capture(uint32_t pc, uint32_t spsr, uint32_t vec)
 {
-    g_fault.vec  = vec;
-    g_fault.pc   = pc;
-    g_fault.spsr = spsr;
-    g_fault.dfsr = rd_dfsr();
-    g_fault.dfar = rd_dfar();
-    g_fault.ifsr = rd_ifsr();
-    g_fault.ifar = rd_ifar();
+    cpu_e core = curr_core();
+
+    g_fault[core].vec  = vec;
+    g_fault[core].pc   = pc;
+    g_fault[core].spsr = spsr;
+    g_fault[core].dfsr = rd_dfsr();
+    g_fault[core].dfar = rd_dfar();
+    g_fault[core].ifsr = rd_ifsr();
+    g_fault[core].ifar = rd_ifar();
 
     __asm__ volatile("dmb sy" ::: "memory");
-    g_fault.magic = FAULT_MAGIC;   /* publish last */
+    g_fault[core].magic = FAULT_MAGIC;   /* publish last */
     __asm__ volatile("dmb sy" ::: "memory");
 }
 
