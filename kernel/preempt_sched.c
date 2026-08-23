@@ -268,10 +268,10 @@ inline void next_thread()
         }
 #endif
 
+        thread_t* thread;
 
         while(incomingThreads->size > 0)
         {
-            thread_t* thread;
             size_t a;
             pop_front(incomingThreads, (char**)(&thread), &a);
 
@@ -288,7 +288,6 @@ inline void next_thread()
 
         while (relHeap->curr_index > 0 && geq_wrapped(gTicks, relHeap->heap[0].thread->release_time))
         {
-            thread_t* thread;
             pop_heap(relHeap, &thread);
             thread->dirty = false;
             thread->thread_status = PENDING;
@@ -298,11 +297,12 @@ inline void next_thread()
 
         while(deadHeap->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
         {
-            thread_t* thread;
-            pop_heap(deadHeap, &thread);
+            thread = deadHeap->heap[0].thread;
 
             if (thread->thread_status == FINISHED)
             {
+                pop_heap(deadHeap, &thread);
+
                 if (thread->periodicity == PERIODIC)
                 {
                     do 
@@ -346,7 +346,6 @@ inline void next_thread()
 
                 curr_thread = thread;
                 thread_found = true;
-                insert_node(deadHeap, thread, thread->deadline);
                 break;
             }
         }
