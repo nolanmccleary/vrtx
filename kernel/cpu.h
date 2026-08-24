@@ -2,7 +2,8 @@
 #define __CPU_H__
 
 #include <stdint.h>
-#include "system.h"   /* ALPHA (used by update_cpu_metrics below) */
+#include "irq.h"
+
 
 
 #if ENABLE_SMP == 1
@@ -20,12 +21,6 @@ typedef enum
 }   cpu_e;
 
 
-inline cpu_e curr_core(void)
-{
-    uint32_t mpidr;
-    __asm__ volatile ("mrc p15, 0, %0, c0, c0, 5" : "=r"(mpidr));
-    return (cpu_e)(mpidr & 0xFF);
-}
 
 
 typedef struct 
@@ -36,15 +31,14 @@ typedef struct
 }   cpu_t;
 
 
-extern volatile uint32_t g_cpu_mailbox;
+extern volatile uint32_t g_cpu_mailbox_uncached;
 extern cpu_t g_cpus[NUM_CPUS];
 
 
-inline void update_cpu_metrics(cpu_e cpu, uint32_t overhead)
-{
-    g_cpus[cpu].avg_overhead = overhead - (overhead >> ALPHA) + (g_cpus[cpu].avg_overhead >> ALPHA);
-}
 
+cpu_e curr_core(void);
+void update_cpu_metrics(cpu_e cpu, uint32_t overhead);
+void send_cpu_interrupt(cpu_sgi_e interrupt);
 
 #endif
 

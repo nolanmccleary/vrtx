@@ -1,8 +1,11 @@
 #include <stdbool.h>
 #include <stdint.h>
-#include "bsp.h"
+#include "cpu.h"
 #include "boot.h"
+#include "bsp.h"
 #include "sequencer.h"
+#include "gic.h"
+#include "timers.h"
 #include "tlsf.h"
 #include "preempt_sched.h"
 #include "pmu.h"
@@ -20,68 +23,13 @@
 #endif
 
 
-#define GICD_CTLR       (*(volatile uint32_t *)0xFFFED000)
-#define GICD_ISENABLER0 (*(volatile uint32_t *)0xFFFED100)
-#define GICC_CTLR       (*(volatile uint32_t *)0xFFFEC100)
-#define GICC_PMR        (*(volatile uint32_t *)0xFFFEC104)
-
-#define GTIMER_CNTRL    (*(volatile uint32_t *)0xFFFEC200)
-#define GTIMER_CNTRH    (*(volatile uint32_t *)0xFFFEC204)
-#define GTIMER_CTRL     (*(volatile uint32_t *)0xFFFEC208)
-#define GTIMER_ISR      (*(volatile uint32_t *)0xFFFEC20C)
-#define GTIMER_CMPL     (*(volatile uint32_t *)0xFFFEC210)
-#define GTIMER_CMPH     (*(volatile uint32_t *)0xFFFEC214)
-#define GTIMER_AUTOINC  (*(volatile uint32_t *)0xFFFEC218)
-
-#define WDT_L4 (*(volatile uint32_t*)0xFFD0200C)
 
 
-
-/////////////////////////////// VECTOR HANDLERS ////////////////////////////////////////////////////
-
-
-void c_irq_handler(int id)
-{
-    switch(id)
-    {
-        case 0x1b:
-            // WDT_L4 = 0x76; //Feed WDT
-            GTIMER_ISR = 1; //Timer ISR ACK, when this
-            next_thread();
-            break;
-
-        default:
-            break;
-    }
-}
-
-
-void c_fiq_handler(int id)
-{
-    (void)id;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////
 
 
 #if ENABLE_SMP
 volatile uint32_t g_cpu1_ready;
-#endif
 
-
-
-
-
-
-
-
-
-
-
-
-///////////////////////////////////////////// SCU INIT //////////////////////////////
-
-#if ENABLE_SMP
 
 static void scu_init(void)
 {
@@ -172,40 +120,7 @@ extern char     _ocram_origin[];    /* = ORIGIN(OCRAM): OCRAM base address      
 ///////////////////////////////////////////// STARTUP /////////////////////////////
 
 
-static void cpu0_timer_start(void)
-{
-    GTIMER_CTRL    = 0;
-    GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 199999;
-    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
-    GTIMER_CMPH    = GTIMER_CNTRH;
-    GTIMER_CTRL    = (1 << 3) | (1 << 2) | (1 << 1) | (1 << 0);
-}
 
-static void cpu1_timer_start(void)
-{
-    GTIMER_ISR     = 1;
-    GTIMER_AUTOINC = 199999;
-    GTIMER_CMPL    = GTIMER_CNTRL + 199999;
-    GTIMER_CMPH    = GTIMER_CNTRH;
-    GTIMER_CTRL   |= (1 << 3) | (1 << 2) | (1 << 1);
-}
-
-static void cpu0_gic_init(void)
-{
-    GICD_CTLR       = 1;
-    GICD_ISENABLER0 |= (1 << 27);
-    GICC_PMR        = 0xFF;
-    GICC_CTLR       = 1;
-}
-
-
-static void cpu1_gic_init(void)
-{
-    GICD_ISENABLER0 |= (1 << 27);
-    GICC_PMR        = 0xFF;
-    GICC_CTLR       = 1;
-}
 
 
 
@@ -352,6 +267,8 @@ static void set_ttb_ptrs(void)
 }
 
 
+
+
 void cpu0_startup(void)
 {
 #if ENABLE_SMP
@@ -367,8 +284,34 @@ void cpu0_startup(void)
 
     pmu_init();
     heap_init();        // must precede psched_init(): it kMalloc's main_thread + the deque
+    
+
+#if ENABLE_SMP
+    g_cpu_mailbox_uncached = 1;
+    __asm__ volatile (
+        "dsb\n\t"
+        "sev\n\t"
+    );
+
+    while (g_cpu_mailbox_uncached != 2)
+    {
+        __asm__ volatile (
+            "wfe\n\t"
+        );
+    }
+
+    g_cpu_mailbox_uncached = 0;
+#endif
+
+
+    __asm__ volatile (
+        "cpsie i\n\t"
+    );
+
     psched_init();
 }
+
+
 
 
 void cpu1_startup(void)
@@ -377,5 +320,4 @@ void cpu1_startup(void)
     cpu1_gic_init();
     cpu1_timer_start();
     pmu_init();
-    psched_init();
 }

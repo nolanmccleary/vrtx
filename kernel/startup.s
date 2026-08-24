@@ -185,22 +185,20 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
+@; Zero Host Shared
+    ldr r0, =_host_shared_start
+    ldr r1, =_host_shared_end
+    mov r2, #0
+host_shared_zero:
+    cmp r0, r1
+    strlt r2, [r0], #4
+    blt host_shared_zero
+
 @; SET CPU1 VBAR, CLEAR MAILBOX AND READY, RELEASE CPU1
 .if ENABLE_SMP != 0
     ldr r0, =SYSMGR_ROMCODE_CPU1STARTADDR
     ldr r1, =_reset_handler
     str r1, [r0]                        @; cpu1startaddr = &_reset_handler (CPU1 re-enters, forks on MPIDR)
-
-
-    @;  mailbox is not zero-initialized by default
-    ldr r0, =g_cpu_mailbox
-    mov r1, #0
-    str r1, [r0]
-
-
-    ldr r0, =g_cpu1_ready
-    mov r1, #0
-    str r1, [r0]                        @; clear handshake flag, immediately pre-release
 
     ldr r0, =RSTMGR_MPUMODRST
     ldr r1, [r0]
@@ -212,12 +210,12 @@ bss_zero:
     bl ktrace_wait_boot
 .endif
     bl cpu0_startup         @; RUN CP0 STARTUP AND SET MAILBOX
-    cpsie i
-    ldr r0, =g_cpu_mailbox
-    mov r1, #1
-    str r1, [r0]
-    dsb 
-    sev
+    ; cpsie i
+    ; ldr r0, =g_cpu_mailbox_uncached
+    ; mov r1, #1
+    ; str r1, [r0]
+    ; dsb
+    ; sev
     bl main
 
 
@@ -225,25 +223,31 @@ bss_zero:
 _cpu1_fork:
 .if ENABLE_SMP != 0
     .align 2
-    .global _cpu1_spin
-    _cpu1_spin:
-        ldr r0, =g_cpu1_ready
-        mov r1, #1
-        str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
-        dsb
-        ldr r0, =g_cpu_mailbox 
+    ldr r0, =g_cpu1_ready
+    mov r1, #1
+    str r1, [r0]                        @; publish: CPU1 is off the 0x0 alias, in OCRAM
+    dsb
+    ldr r0, =g_cpu_mailbox_uncached
 
+    wfe
+    1:  ldr r1, [r0]
+        cmp r1, #0
+        bne engage
         wfe
-        1:  ldr r1, [r0]
-            cmp r1, #0
-            bne engage
-            wfe
-            b 1b
+        b 1b
 
-        engage:
-            bl cpu1_startup
-            cpsie i
-            bl cpu1_main
+    engage:
+        bl cpu1_startup
+        cpsie i
+
+        ldr r0, =g_cpu_mailbox_uncached
+        mov r1, #2 
+        str r1, [r0]  
+        dsb 
+        sev
+
+
+        bl cpu1_main
 .endif
     
 

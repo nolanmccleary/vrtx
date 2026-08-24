@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "aux.h"
 #include "cpu.h"
+#include "lock.h"
 #include "pmu.h"
 #include "preempt_sched.h"
 #include "tlsf.h"
@@ -92,67 +93,110 @@ uint32_t gMissedDeadlines[NUM_CPUS];
 
 
 
-sys_exit_e psched_init()
+sys_exit_e psched_core_init(void)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
-
-    char* sp;
-    __asm__ __volatile__ ("mov %0, sp" : "=r"(sp));
-
-    
     cpu_e core = curr_core();
 
-    gTicks[core] = 0;
-    gMissedDeadlines[core] = 0;
+    if (!sched_init[core])
+    {
+        char* sp;
+        __asm__ __volatile__ ("mov %0, sp" : "=r"(sp));
+        gTicks[core] = 0;
+        gMissedDeadlines[core] = 0;
 
-    deadHeap[core] = &heap1[core];
-    relHeap[core] = &heap2[core];
+        deadHeap[core] = &heap1[core];
+        relHeap[core] = &heap2[core];
 
-    incomingThreads[core] = initialize_deque();
+        incomingThreads[core] = initialize_deque();
 
-    main_thread[core] = (thread_t*)kMalloc(sizeof(thread_t));
-    main_thread[core]->thread_status = RUNNING;
-    main_thread[core]->sp = sp;
+        main_thread[core] = (thread_t*)kMalloc(sizeof(thread_t));
+        main_thread[core]->thread_status = RUNNING;
+        main_thread[core]->sp = sp;
 
-    curr_thread[core] = main_thread[core];
+        curr_thread[core] = main_thread[core];
 
-    sched_init[core] = true;
+        sched_init[core] = true;
 
-    __asm__ __volatile__("dmb sy" ::: "memory");
+        __asm__ __volatile__("dmb sy" ::: "memory");
+    }
+
     __asm__ __volatile__("cpsie i" ::: "memory");
-
     return SYS_OK;
 }
 
 
 
-//TODO: May want to make this only callable from main
-sys_exit_e psched_deinit()
+sys_exit_e psched_core_deinit(void)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
-
-
     cpu_e core = curr_core();
 
-    destroy_deque(incomingThreads[core]);
-
-    for (size_t i = 0; i < deadHeap[core]->curr_index; i++)
+    if (sched_init[core])
     {
-        if (deadHeap[core]->heap[i].thread != NULL) kFree(deadHeap[core]->heap[i].thread);
+        destroy_deque(incomingThreads[core]);
+
+        for (size_t i = 0; i < deadHeap[core]->curr_index; i++)
+        {
+            if (deadHeap[core]->heap[i].thread != NULL) kFree(deadHeap[core]->heap[i].thread);
+        }
+
+        for (size_t i = 0; i < relHeap[core]->curr_index; i++)
+        {
+            if (relHeap[core]->heap[i].thread != NULL) kFree(relHeap[core]->heap[i].thread);
+        }
+
+        kFree(main_thread[core]);
+
+        sched_init[core] = false;
+        __asm__ __volatile__("dmb sy" ::: "memory");
     }
 
-    for (size_t i = 0; i < relHeap[core]->curr_index; i++)
-    {
-        if (relHeap[core]->heap[i].thread != NULL) kFree(relHeap[core]->heap[i].thread);
-    }
-
-    kFree(main_thread[core]);
-
-    sched_init[core] = false;
-
-    __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
+    return SYS_OK;
+}
 
+
+
+sys_exit_e psched_init(void)
+{
+    psched_core_init();
+
+#if ENABLE_SMP
+    uint32_t prev = g_spin_exit;
+    g_spin_exit = 0;
+
+    send_cpu_interrupt(CPU_PSCHED_INIT_REQUEST);
+
+    while (!g_spin_exit)
+    {
+        __asm__ volatile ("wfi");
+    };
+
+    g_spin_exit = prev;
+#endif
+    return SYS_OK;
+}
+
+
+
+sys_exit_e psched_deinit(void)
+{
+    psched_core_deinit();
+
+#if ENABLE_SMP
+    uint32_t prev = g_spin_exit;
+    g_spin_exit = 0;
+
+    send_cpu_interrupt(CPU_PSCHED_DEINIT_REQUEST);
+
+    while (!g_spin_exit)
+    {
+        __asm__ volatile ("wfi");
+    };
+
+    g_spin_exit = prev;
+#endif
     return SYS_OK;
 }
 

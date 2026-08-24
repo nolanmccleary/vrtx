@@ -38,6 +38,10 @@ CORE := \
 	kernel/pmu.c \
 	kernel/thread.c \
 	kernel/cpu.c \
+	kernel/gic.c \
+	kernel/irq.c \
+	kernel/lock.c \
+	kernel/timers.c \
 	bench/ktrace.c \
 	bench/fault.c \
 	bench/telemetry.c \

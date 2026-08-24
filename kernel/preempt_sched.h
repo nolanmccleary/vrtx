@@ -21,6 +21,8 @@ extern uint32_t gTicks[NUM_CPUS];
 extern uint32_t gMissedDeadlines[NUM_CPUS];
 
 
+sys_exit_e psched_core_init(void);
+sys_exit_e psched_core_deinit(void);
 sys_exit_e psched_init(void);
 sys_exit_e psched_deinit(void);
 sys_exit_e psched_clear_threads(void);
