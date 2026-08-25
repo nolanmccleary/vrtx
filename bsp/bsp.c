@@ -25,6 +25,11 @@
 
 
 
+//TODO: Null guarded zone is first section (1Mb) right now. This is excessive and should be moved to 
+// first page at some point
+
+
+
 
 
 #if ENABLE_SMP
@@ -77,7 +82,7 @@ static void l2_cache_init(void)
 ///////////////////////////////////////////// MMU INIT /////////////////////////////
 
 
-// FYI I am calling Sections and Pages here L1 and L2 blocks because I think they were poorly chosen terms and this is my project so I do what I want
+
 
 
 
@@ -179,6 +184,10 @@ static void build_tables(void)
         uint32_t l1_entry      = (l1_block < sdram_block_count) ? L1_ENTRY_MAP_BLOCK_CACHEABLE : L1_ENTRY_MAP_BLOCK_DEVICE;
         l1_table[l1_block] = l1_block_base | l1_entry;
     }
+
+#if ENABLE_NULL_GUARD
+    l1_table[0] = 0u;
+#endif
 
 #if ENABLE_ICACHE
     /* Fill the L2 table for the delegated block (0xFFF00000..0xFFFFFFFF, which holds

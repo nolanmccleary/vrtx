@@ -50,6 +50,7 @@ ENABLE_DCACHE ?= 1
 ENABLE_ICACHE ?= 1
 ENABLE_L2     ?= 1   # PL310 outer (L2) cache; requires ENABLE_MMU
 ENABLE_SMP    ?= 1
+ENABLE_NULL_GUARD ?= 1   # unmap VA 0..1MB so NULL / near-NULL derefs fault (needs ENABLE_MMU)
 
 
 # Self-boot test gate: compile the spin at the top of main() that hangs until
@@ -75,6 +76,7 @@ CFLAGS := \
 	-DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) \
 	-DENABLE_SMP=$(ENABLE_SMP) \
+	-DENABLE_NULL_GUARD=$(ENABLE_NULL_GUARD) \
 	-DBOOT_TEST=$(BOOT_TEST) \
 	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP) \
 	-Wa,--defsym,BOOT_TEST=$(BOOT_TEST)
