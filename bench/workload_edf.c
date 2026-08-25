@@ -336,7 +336,17 @@ void edf_run(void)
         thread_handle_t handles [NTASKS];
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            add_thread(
+            add_thread_to_core(
+                CPU0, 
+                JOBS[i],
+                g_edf_periods[i],
+                PERIODIC,
+                &handles[i]
+            );
+
+
+            add_thread_to_core(
+                CPU1, 
                 JOBS[i],
                 g_edf_periods[i],
                 PERIODIC,

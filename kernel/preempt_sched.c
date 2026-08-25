@@ -198,9 +198,8 @@ sys_exit_e psched_deinit(void)
 
 
 
-sys_exit_e add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, thread_handle_t* handle)
+sys_exit_e add_thread_to_core(cpu_e core, sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, thread_handle_t* handle)
 {
-    cpu_e core = curr_core();
 
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
     new_thread->period = period;
