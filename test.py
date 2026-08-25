@@ -541,14 +541,14 @@ def allocbench(ocd: OCD, symbols: dict[str, int]) -> list[Metric]:
 
 
 def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
-             periods: tuple[int, ...], u_values: tuple[int, ...]) -> tuple[list[EDFResult], dict[int, Sequence[int]]]:
+             periods: tuple[int, ...], u_values: tuple[int, ...]) -> tuple[list[EDFResult], dict[int, bytes], bytes]:
     ocd.continue_from_breakpoint()          # off bp_alloc (or load); ready/done armed by main()
     bp_edf_ready = symbols["ktrace_bp_edf_ready"]
     bp_edf_done  = symbols["ktrace_bp_edf_done"]
     print_edf_header()
 
     edf_results: list[EDFResult] = []
-    traces: dict[int, Sequence[int]] = {}
+    traces: dict[int, bytes] = {}
 
     for trial, expected_u in enumerate(u_values):
         ocd.expect_breakpoint(bp_edf_ready, timeout=15.0)
@@ -568,9 +568,11 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
         edf_results.append(result)
         print_edf_result(result)
 
-        trace_len = min(ocd.read_u32(symbols["g_trace_len"]), TRACE_TICKS)
-        if trace_len:
-            traces[result.u_permille] = ocd.read_bytes(symbols["g_sched_trace"], trace_len)
+        # CPU0 schedule trace this trial: g_sched_trace[0][.], g_trace_len[0].
+        # (CPU1 is idle during the CPU0 sweep -- its trace comes from phase B below.)
+        n = min(ocd.read_u32(symbols["g_trace_len"]), TRACE_TICKS)
+        if n:
+            traces[result.u_permille] = ocd.read_bytes(symbols["g_sched_trace"], n)
 
         # Release the sampled trial; let firmware run on to the next trial's bp_edf_ready.
         # It may already be sitting on it (short trial) -- only resume if it isn't.
@@ -583,11 +585,25 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
         ocd.resume()
 
     ocd.expect_breakpoint(bp_edf_done, timeout=30.0)
-    return edf_results, traces
+
+    # Phase B: CPU0 has seeded the edf_driver onto CPU1 and parked. CPU1 now runs its
+    # own u=0.7 workload alone (no concurrent allocation). Let it fill its trace, then
+    # snapshot g_sched_trace[1] / g_trace_len[1] on the CPU1 target for the CPU1 Gantt.
+    cpu1_trace = b""
+    if num_cpus > 1:
+        ocd.resume()                       # CPU0 -> its idle loop (keeps ticking, feeds the WDT)
+        time.sleep(3.0)                     # CPU1 accumulates its schedule trace
+        ocd.cmd("targets cv_hps.cpu1")
+        ocd.cmd("halt")
+        n = min(ocd.read_u32(symbols["g_trace_len"] + 4), TRACE_TICKS)   # g_trace_len[1]
+        cpu1_trace = ocd.read_bytes(symbols["g_sched_trace"] + TRACE_TICKS, n) if n else b""
+        ocd.cmd("targets cv_hps.cpu")
+
+    return edf_results, traces, cpu1_trace
 
 
 def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list[EDFResult],
-                    traces: dict[int, Sequence[int]], periods: tuple[int, ...]) -> None:
+                    traces: dict[int, bytes], periods: tuple[int, ...], cpu1_trace: bytes = b"") -> None:
     # A skipped phase leaves its list empty and is simply not written.
     if alloc_metrics:
         write_alloc_csv(outdir / "alloc.csv", alloc_metrics[:4])
@@ -612,11 +628,17 @@ def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list
 
     for u in sorted(labels):
         trace = traces.get(u)
-        if trace is None:
+        if not trace:
             continue
         plot_gantt(trace, periods, outdir / f"edf_schedule_u{u / 1000:.3f}.png", u,
                    u_configured=by_u[u].configured_u, task_u=by_u[u].measured_u_per_task,
                    label=" / ".join(labels[u]))
+
+    # CPU1 Gantt at u=0.7 from the phase-B capture (per-core CPU1 metrics not mirrored yet
+    # -> no task-U labels). configured_u is the same u=0.7 the driver set up.
+    if cpu1_trace and COMFORTABLE_U in by_u:
+        plot_gantt(cpu1_trace, periods, outdir / f"edf_schedule_cpu1_u{COMFORTABLE_U / 1000:.3f}.png",
+                   COMFORTABLE_U, u_configured=by_u[COMFORTABLE_U].configured_u, label="CPU1")
 
     clean = [r for r in edf_results if r.misses == 0]
     if clean:
@@ -649,7 +671,8 @@ def main(bootable: bool = False) -> None:
 
     alloc_metrics: list[Metric] = []
     edf_results: list[EDFResult] = []
-    traces: dict[int, Sequence[int]] = {}
+    traces: dict[int, bytes] = {}
+    cpu1_trace: bytes = b""
 
     with OCD() as ocd:
         if bootable:
@@ -677,9 +700,9 @@ def main(bootable: bool = False) -> None:
 
         # Control panel: comment a phase to skip it (also comment its call in main.c).
         alloc_metrics = allocbench(ocd, symbols)
-        edf_results, traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
+        edf_results, traces, cpu1_trace = edf_test(ocd, symbols, num_cpus, periods, u_values)
 
-    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods)
+    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_trace)
     print(f"\nPASS   artifacts in {outdir}")
 
 
