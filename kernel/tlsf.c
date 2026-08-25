@@ -480,9 +480,9 @@ allocator_op_e heap_destroy(void)
     if (g_heap_initialized)
     {
         
-        sched_init[CPU0] = false;
+        g_cpus[CPU0].sched_init = false;
 #if ENABLE_SMP == 1 
-        sched_init[CPU1] = false;
+        g_cpus[CPU1].sched_init = false;
 #endif
 
 

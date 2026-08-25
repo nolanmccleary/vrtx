@@ -148,7 +148,7 @@ void ktrace_edf_tick(thread_t* running)
 {
     if (!trace_active) return;
 
-    cpu_e core = curr_core();
+    cpu_core_e core = curr_core();
     int idx = trace_idx(running);
 
     if (g_trace_len[core] < TRACE_TICKS)
@@ -161,8 +161,8 @@ void ktrace_edf_tick(thread_t* running)
         g_edf_metrics[idx] = running->metrics;
     }
 
-    g_ticks_m[core]    = gTicks[core];
-    g_misses_m[core]   = gMissedDeadlines[core];
+    g_ticks_m[core]    = g_cpus[core].ticks;
+    g_misses_m[core]   = g_cpus[core].missed_deadlines;
     g_overhead_m[core] = g_cpus[core].avg_overhead;
 }
 
@@ -175,7 +175,7 @@ void ktrace_edf_tick(thread_t* running)
 // returns current gTicks value
 static inline uint32_t rd_ticks(void)
 {
-    return *(volatile uint32_t*)&gTicks[curr_core()];
+    return *(volatile uint32_t*)&g_cpus[curr_core()].ticks;
 }
 
 
@@ -249,8 +249,8 @@ static void configure_work(uint32_t u_permille, uint32_t cycles_per_tick, uint32
 
 static void reset_trial(void)
 {
-    gTicks[curr_core()] = 0u;
-    gMissedDeadlines[curr_core()] = 0u;
+    g_cpus[curr_core()].ticks = 0u;
+    g_cpus[curr_core()].missed_deadlines = 0u;
 
 
     trace_active   = 1u;   /* trace every trial; the host reads each one and picks which to plot */
@@ -270,44 +270,29 @@ static void reset_trial(void)
 }
 
 
-/* -------------------------------------------------------------------------
- * CPU1 driver task
- *
- * Aperiodic task seeded onto CPU1. It runs ON CPU1, so every allocation it does
- * (adding the periodic jobs) is on CPU1's own instruction stream -- the cpsid
- * guards it from CPU1's own tick re-entering the allocator. No second core is in
- * the allocator while this runs (CPU0 has parked), so no lock is needed.
- *
- * DRIVER_PERIOD is huge on purpose: a far deadline makes the driver the lowest
- * EDF priority, so the moment it adds the periodic jobs they preempt it and run.
- * It never returns (never freed), and idles in the schedule's slack thereafter.
- * ------------------------------------------------------------------------- */
-
 #define DRIVER_PERIOD  1000000u
 
 static sys_exit_e edf_driver(void)
 {
-    cpu_e core = curr_core();
+    cpu_core_e core = curr_core();
 
     uint32_t cycles_per_tick = measure_cycles_per_tick();
     uint32_t cycles_per_iter = measure_cycles_per_iter();
 
-    configure_work(700u, cycles_per_tick, cycles_per_iter);   /* u = 0.7 */
+    configure_work(700u, cycles_per_tick, cycles_per_iter);
 
     g_edf_u_permille  = 700u;
     g_trace_len[core] = 0u;
     trace_active      = 1u;
 
-    thread_handle_t handles[NTASKS];
-
     __asm__ __volatile__("cpsid i" ::: "memory");
     for (uint32_t i = 0; i < NTASKS; i++)
     {
-        add_thread_to_core(core, JOBS[i], g_edf_periods[i], PERIODIC, &handles[i]);
+        add_thread_to_core(core, JOBS[i], g_edf_periods[i], PERIODIC);
     }
     __asm__ __volatile__("cpsie i" ::: "memory");
 
-    for (;;) {}   /* lowest-priority idle; the periodic jobs preempt and run under EDF */
+    for (;;) {}
 }
 
 
@@ -370,16 +355,15 @@ void edf_run(void)
 
         g_test_release = 0u;
 
-        thread_handle_t handles0 [NTASKS];
+        thread_t* handles0 [NTASKS];
 
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            add_thread_to_core(
+            handles0[i] = add_thread_to_core(
                 CPU0,
                 JOBS[i],
                 g_edf_periods[i],
-                PERIODIC,
-                &handles0[i]
+                PERIODIC
             );
         }
 
@@ -436,7 +420,7 @@ void edf_run(void)
         // psched_clear_threads();
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            kill_thread (&handles0[i]);
+            kill_thread(handles0[i]);
         }
 
 
@@ -449,26 +433,12 @@ void edf_run(void)
     }
 
 
-    /*
-     * Phase B handoff. CPU1 has been idle for all of phase A (no tasks -> no
-     * allocation), so this single cross-core seed is safe: push_back increments
-     * size last and the dmb publishes the fully-linked node before CPU1's next
-     * drain can observe size > 0. The cpsid guards CPU0's own tick from re-entering
-     * the allocator mid-kMalloc. No heap_reset -- that would free CPU1's live
-     * scheduler state out from under it.
-     */
-    thread_handle_t driver_handle;
-
     __asm__ __volatile__("cpsid i" ::: "memory");
-    add_thread_to_core(CPU1, edf_driver, DRIVER_PERIOD, APERIODIC, &driver_handle);
+    add_thread_to_core(CPU1, edf_driver, DRIVER_PERIOD, APERIODIC);
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
 
-    /*
-     * CPU0 sweep done -> host event. The host then lets CPU1 run its u=0.7 workload
-     * and reads g_sched_trace[CPU1] / g_trace_len[CPU1] for the CPU1 Gantt.
-     */
     KTRACE_EDF_DONE();
 
-    for (;;) {}   /* CPU0 idles: ticks keep the WDT fed; no CPU0 tasks -> no allocation */
+    for (;;) {}
 }

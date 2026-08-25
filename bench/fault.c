@@ -16,7 +16,7 @@ static inline uint32_t rd_ifar(void) { uint32_t v; __asm__ volatile("mrc p15,0,%
 
 void fault_capture(uint32_t pc, uint32_t spsr, uint32_t vec)
 {
-    cpu_e core = curr_core();
+    cpu_core_e core = curr_core();
 
     g_fault[core].vec  = vec;
     g_fault[core].pc   = pc;
