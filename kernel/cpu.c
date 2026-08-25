@@ -1,13 +1,13 @@
 #include "gic.h"
 #include "cpu.h"
-#include "system.h"
+#include "aux.h"
 #include "telemetry.h"
 
 
 HOST_SHARED volatile uint32_t g_cpu_mailbox_uncached;
 
 
-cpu_t g_cpus[NUM_CPUS];
+volatile cpu_t g_cpus[NUM_CPUS];
 
 
 

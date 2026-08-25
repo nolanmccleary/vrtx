@@ -12,6 +12,7 @@ typedef enum
 }   allocator_op_e;
 
 
+extern volatile bool g_heap_initialized;
 
 
 allocator_op_e  heap_init(void);

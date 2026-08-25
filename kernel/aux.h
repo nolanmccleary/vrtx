@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define ALPHA 2
 
 static inline bool geq_wrapped(uint32_t a, uint32_t b)
 {

@@ -6,6 +6,7 @@
 #include "thread.h"
 #include "tlsf.h"
 #include "workload_compute.h"
+#include "preempt_sched.h"
 
 
 #define SZ      64
@@ -71,6 +72,8 @@ static void mem_walk(int slot, int words, int passes)
 void allocbench_run(void)
 {
     void* p;
+
+    // psched_deinit();
 
 
     pmu_init();

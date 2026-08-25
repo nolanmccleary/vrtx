@@ -16,6 +16,7 @@ typedef struct
 
 
 
+extern volatile bool sched_init[NUM_CPUS];
 
 extern uint32_t gTicks[NUM_CPUS];
 extern uint32_t gMissedDeadlines[NUM_CPUS];

@@ -8,18 +8,6 @@ NM      := $(CROSS)-nm
 BOARD ?= de1-soc
 
 
-# ---------------------------------------------------------------------------
-# Allocator
-# ---------------------------------------------------------------------------
-
-TLSF ?= 1
-
-ifeq ($(TLSF),1)
-ALLOC_SRC := kernel/tlsf.c
-else
-ALLOC_SRC := kernel/allocator.c
-endif
-
 
 # ---------------------------------------------------------------------------
 # Sources
@@ -31,7 +19,7 @@ CORE := \
 	bsp/bsp.c \
 	bsp/boot.c \
 	bsp/sequencer.c \
-	$(ALLOC_SRC) \
+	kernel/tlsf.c \
 	kernel/preempt_sched.c \
 	kernel/deque.c \
 	kernel/min_heap.c \

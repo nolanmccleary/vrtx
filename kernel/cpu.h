@@ -32,7 +32,7 @@ typedef struct
 
 
 extern volatile uint32_t g_cpu_mailbox_uncached;
-extern cpu_t g_cpus[NUM_CPUS];
+extern volatile cpu_t g_cpus[NUM_CPUS];
 
 
 

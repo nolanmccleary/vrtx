@@ -285,8 +285,8 @@ void edf_run(void)
     /*
      * allocbench destroyed its heap before returning.
      */
-    // heap_init();
-    // psched_init();
+    heap_init();
+    psched_init();
 
     for (uint32_t c = 0; c < NUM_CPUS; c++)
     {

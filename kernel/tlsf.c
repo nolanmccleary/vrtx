@@ -4,7 +4,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "cpu.h"
 #include "tlsf.h"
+#include "preempt_sched.h"
 
 
 
@@ -43,7 +45,7 @@ extern char _heap_end;
 
 
 
-static bool heap_initialized = false;
+volatile bool g_heap_initialized;
 
 
 
@@ -442,7 +444,7 @@ allocator_op_e kFree(void* target)
 
 allocator_op_e heap_init(void)
 {
-    if (!heap_initialized)
+    if (!g_heap_initialized)
     {
         for (size_t i = 0; i < TLSF_SIZE-1; i++)
         {
@@ -466,7 +468,7 @@ allocator_op_e heap_init(void)
         fBitmap = 1 << (FL_COUNT-1);
         sBitmap[FL_COUNT-LIN] = 1 << (SL_COUNT-1);
 
-        heap_initialized = true;
+        g_heap_initialized = true;
         
         return ALLOC_OP_OK;
     }
@@ -479,8 +481,15 @@ allocator_op_e heap_init(void)
 
 allocator_op_e heap_destroy(void)
 {
-    if (heap_initialized)
+    if (g_heap_initialized)
     {
+        
+        sched_init[CPU0] = false;
+#if ENABLE_SMP == 1 
+        sched_init[CPU1] = false;
+#endif
+
+
         size_t i;
 
         for (i = 0; i < TLSF_SIZE; i++)
@@ -495,7 +504,7 @@ allocator_op_e heap_destroy(void)
             sBitmap[i] = 0;
         }
 
-        heap_initialized = false;
+        g_heap_initialized = false;
 
         return ALLOC_OP_OK;
     }
@@ -508,7 +517,7 @@ allocator_op_e heap_destroy(void)
 
 allocator_op_e heap_reset(void)
 {
-    if (heap_initialized)
+    if (g_heap_initialized)
     {
         heap_destroy();
         heap_init();
