@@ -21,7 +21,7 @@ CORE := \
 	bsp/sequencer.c \
 	kernel/tlsf.c \
 	kernel/preempt_sched.c \
-	kernel/deque.c \
+	kernel/thread_fifo.c \
 	kernel/min_heap.c \
 	kernel/pmu.c \
 	kernel/thread.c \
@@ -179,4 +179,33 @@ clean:
 	rm -rf build
 
 
-.PHONY: build clean flash test preloader boot
+# Lint = two analyzers over our sources (warnings are off in the normal build).
+# Skips bsp/sequencer.c (vendor-generated Altera SDRAM calibration; its sign-compare/
+# unused noise isn't ours to fix). Both track the ENABLE_* config, so e.g.
+# `make ENABLE_SMP=0 lint` lints that variant.
+LINT_WARN := -Wall -Wextra -Wshadow -Wundef -Wpointer-arith
+LINT_SRC  := $(filter-out bsp/sequencer.c,$(filter %.c,$(CORE)))
+
+LINT_DEFS := -DBOARD_DE1_SOC -DMODE_TEST -DENABLE_MMU=$(ENABLE_MMU) \
+	-DENABLE_DCACHE=$(ENABLE_DCACHE) -DENABLE_ICACHE=$(ENABLE_ICACHE) \
+	-DENABLE_L2=$(ENABLE_L2) -DENABLE_SMP=$(ENABLE_SMP) -DBOOT_TEST=$(BOOT_TEST)
+
+# unix32: 32-bit long + pointer, matching the ARM32 EABI cppcheck can't otherwise know.
+CPPCHECK := cppcheck --quiet --enable=warning,style,performance,portability \
+	--std=c11 --platform=unix32 --inline-suppr --suppress=missingIncludeSystem \
+	-I. -Ibsp -Ikernel -Ibench $(LINT_DEFS)
+
+lint:
+	@echo "=== gcc ($(LINT_WARN)) ==="
+	-@$(CC) $(CFLAGS) $(LINT_WARN) -fsyntax-only $(LINT_SRC)
+	@echo "=== cppcheck ==="
+	-@$(CPPCHECK) $(LINT_SRC)
+	@echo "=== lint done ==="
+
+# Deeper: GCC's static analyzer (use-after-free, double-free, leaks, null derefs).
+# Slower; run when chasing a memory bug.
+lint-analyze:
+	@$(CC) $(CFLAGS) $(LINT_WARN) -fanalyzer -fsyntax-only $(LINT_SRC)
+
+
+.PHONY: build clean flash test preloader boot lint lint-analyze

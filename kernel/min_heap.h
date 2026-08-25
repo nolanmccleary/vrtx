@@ -7,7 +7,6 @@
 #include "thread.h"
 
 
-#define MAX_NODES 100
 
 
 typedef enum
@@ -28,7 +27,7 @@ typedef struct
 
 typedef struct
 {
-    heap_node_t heap [MAX_NODES];
+    heap_node_t heap [MAX_THREADS];
     size_t curr_index;
 }   heap_t;
 

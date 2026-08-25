@@ -91,7 +91,7 @@ static inline void percolate_down(heap_t* heap, int index)
 heap_op_e insert_node(heap_t* heap, thread_t* thread, uint32_t order)
 {
     
-    if (heap->curr_index < MAX_NODES)
+    if (heap->curr_index < MAX_THREADS)
     {
         heap_node_t node;
         node.thread = thread;

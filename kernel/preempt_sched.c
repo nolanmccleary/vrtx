@@ -9,7 +9,7 @@
 #include "system.h"
 #include "thread.h"
 #include "min_heap.h"
-#include "deque.h"
+#include "thread_fifo.h"
 #include "ktrace.h"
 
 
@@ -28,7 +28,7 @@ static thread_t* curr_thread[NUM_CPUS];
 static thread_t* main_thread[NUM_CPUS];
 
 
-static deque_t* incomingThreads[NUM_CPUS];
+static thread_fifo_t incomingThreads[NUM_CPUS];
 
 
 static void thread_exit()
@@ -106,7 +106,7 @@ sys_exit_e psched_core_init(void)
     deadHeap[core] = &heap1[core];
     relHeap[core] = &heap2[core];
 
-    incomingThreads[core] = initialize_deque();
+    initialize_fifo(&incomingThreads[core]);
 
     main_thread[core] = (thread_t*)kMalloc(sizeof(thread_t));
     main_thread[core]->thread_status = RUNNING;
@@ -130,7 +130,7 @@ sys_exit_e psched_core_deinit(void)
     cpu_e core = curr_core();
 
 
-    destroy_deque(incomingThreads[core]);
+    destroy_threads(&incomingThreads[core]);
 
     for (size_t i = 0; i < deadHeap[core]->curr_index; i++)
     {
@@ -208,7 +208,7 @@ sys_exit_e add_thread_to_core(cpu_e core, sys_exit_e (*func)(void), uint32_t per
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
 
-    push_back(incomingThreads[core], (char*)(new_thread), sizeof(thread_t));
+    fifo_push(&incomingThreads[core], new_thread);
 
     init_metrics(new_thread);
 
@@ -246,13 +246,7 @@ sys_exit_e psched_clear_threads(void)
 
     thread_t *thread;
 
-    while (incomingThreads[core]->size > 0)
-    {
-        size_t size;
-        pop_front(incomingThreads[core], (char**)&thread, &size);
-        if (thread != NULL)
-            kFree(thread);
-    }
+    destroy_threads(&incomingThreads[core]);
 
     while (deadHeap[core]->curr_index > 0)
     {
@@ -324,10 +318,9 @@ inline void next_thread()
 
         thread_t* thread;
 
-        while(incomingThreads[core]->size > 0)
+        while(incomingThreads[core].size > 0)
         {
-            size_t a;
-            pop_front(incomingThreads[core], (char**)(&thread), &a);
+            thread = fifo_pop(&incomingThreads[core]);
 
             thread->release_time = gTicks[core];
             thread->deadline = gTicks[core] + thread->period;

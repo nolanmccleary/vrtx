@@ -49,16 +49,12 @@ volatile bool g_heap_initialized;
 
 
 
-typedef union 
+typedef struct 
 {
-    struct 
-    {
-        uint32_t size : 24;
-        uint32_t is_type_free_block : 1;
-        uint32_t _free : 7;
-    }   fields;
+    uint32_t size : 24;
+    uint32_t is_type_free_block : 1;
+    uint32_t _free : 7;
 
-    uint32_t raw;
 }   tlsf_size_u;
 
 
@@ -243,7 +239,7 @@ void* kMalloc(size_t size)
     free_block_t* free_block = get_free(size);   // size==0 -> NULL; sub-min handled by map_up's check chain
     if (free_block != NULL)
     {
-        size_t orig_size = free_block->size.fields.size;
+        size_t orig_size = free_block->size.size;
 
         uint32_t ofBit, osBit, osBitInd;                                 // free_block's own bin, for removal below
         uint32_t obin = map_down(orig_size, &ofBit, &osBit, &osBitInd);
@@ -253,15 +249,15 @@ void* kMalloc(size_t size)
         if (orig_size >= size + sizeof(taken_block_t) + MIN_PAYLOAD) // If we have enough for another block we split
         {
             free_block_t* new_block = (free_block_t*)((char*)free_block + size + sizeof(taken_block_t));
-            new_block->size.fields.size = new_size;
-            new_block->size.fields.is_type_free_block = 1;
+            new_block->size.size = new_size;
+            new_block->size.is_type_free_block = 1;
             new_block->prev_phys = free_block;
 
             free_block_t* after = (free_block_t*)((char*)new_block + new_size + sizeof(taken_block_t));
             if ((uintptr_t)after < HEAP_END) after->prev_phys = new_block; // remainder is now the after-block's prev
 
 
-            free_block->size.fields.size = size;
+            free_block->size.size = size;
 
 
             uint32_t fBit, sBit, sBitInd;
@@ -281,7 +277,7 @@ void* kMalloc(size_t size)
         }
 
 
-        free_block->size.fields.is_type_free_block = 0;
+        free_block->size.is_type_free_block = 0;
 
         free_block_t* prev = free_block->prev;
         free_block_t* next = free_block->next;
@@ -323,17 +319,17 @@ allocator_op_e kFree(void* target)
 
     taken_block_t* curr = (taken_block_t*)((char*)target - sizeof(taken_block_t));
 
-    if (curr->size.fields.is_type_free_block) return ALLOC_OP_FAIL;
+    if (curr->size.is_type_free_block) return ALLOC_OP_FAIL;
 
-    size_t init_size = curr->size.fields.size;
+    size_t init_size = curr->size.size;
     size_t new_free_size = init_size;
 
 
     free_block_t* prev_phys = (free_block_t*)curr->prev_phys;
 
-    while (prev_phys != NULL && prev_phys->size.fields.is_type_free_block)
+    while (prev_phys != NULL && prev_phys->size.is_type_free_block)
     {
-        uint32_t prevSize = prev_phys->size.fields.size;
+        uint32_t prevSize = prev_phys->size.size;
         new_free_size += prevSize + sizeof(taken_block_t);
 
         free_block_t* prev = prev_phys->prev;
@@ -375,9 +371,9 @@ allocator_op_e kFree(void* target)
 
     free_block_t* next_phys = (free_block_t*)((char*)target + init_size);
 
-    while ((uintptr_t)next_phys < HEAP_END && next_phys->size.fields.is_type_free_block)
+    while ((uintptr_t)next_phys < HEAP_END && next_phys->size.is_type_free_block)
     {
-        uint32_t nextSize = next_phys->size.fields.size;
+        uint32_t nextSize = next_phys->size.size;
         new_free_size += nextSize + sizeof(taken_block_t);
 
         free_block_t* prev = next_phys->prev;
@@ -416,8 +412,8 @@ allocator_op_e kFree(void* target)
 
 
     free_block_t* new_free = (free_block_t*)curr;
-    new_free->size.fields.size = new_free_size;
-    new_free->size.fields.is_type_free_block = 1;
+    new_free->size.size = new_free_size;
+    new_free->size.is_type_free_block = 1;
 
     free_block_t* after = (free_block_t*)((char*)new_free + new_free_size + sizeof(taken_block_t));
     if ((uintptr_t)after < HEAP_END) after->prev_phys = new_free; // keep the after-block's boundary tag pointing at us
@@ -460,13 +456,13 @@ allocator_op_e heap_init(void)
         sentinel->prev_phys = NULL;
         sentinel->prev = NULL;
         sentinel->next = NULL;
-        sentinel->size.fields.size = INITIAL_FREE;
-        sentinel->size.fields.is_type_free_block = 1;
+        sentinel->size.size = INITIAL_FREE;
+        sentinel->size.is_type_free_block = 1U;
 
-        tlsf_array[TLSF_SIZE-1] = sentinel;
+        tlsf_array[TLSF_SIZE-1U] = sentinel;
 
-        fBitmap = 1 << (FL_COUNT-1);
-        sBitmap[FL_COUNT-LIN] = 1 << (SL_COUNT-1);
+        fBitmap = 1U << (FL_COUNT-1U);
+        sBitmap[FL_COUNT-LIN] = 1U << (SL_COUNT-1U);
 
         g_heap_initialized = true;
         
@@ -499,7 +495,7 @@ allocator_op_e heap_destroy(void)
 
         fBitmap = 0;
         
-        for (i = 0; i < FL_COUNT - (LIN - 1); i++)
+        for (i = 0; i < FL_COUNT - (LIN - 1U); i++)
         {
             sBitmap[i] = 0;
         }

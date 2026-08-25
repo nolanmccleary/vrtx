@@ -246,7 +246,6 @@ _cpu1_fork:
         dsb 
         sev
 
-
         bl cpu1_main
 .endif
     
