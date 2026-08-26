@@ -27,6 +27,8 @@ COMFORTABLE_U = 700       # always plot this under-capacity trial as a baseline
 
 # --- target ABI -------------------------------------------------------------
 # g_metrics[]  metric_t : min, max, sum, count   (mean = sum/count)
+# One name per slot, in slot order -- the host<->target ABI. Slots are written by
+# workload_allocbench.c (0-3), workload_rmw.c (4-5), workload_matmul.c (6).
 METRIC_STRUCT = struct.Struct("<IIII")
 METRIC_SIZE   = METRIC_STRUCT.size
 ALLOC_NAMES   = ["malloc", "free", "malloc_loaded", "free_loaded",
@@ -376,16 +378,17 @@ def write_alloc_csv(path: Path, metrics: Sequence[Metric]) -> None:
 
 
 def write_cache_csv(path: Path, metrics: Sequence[Metric]) -> None:
-    # For mem_walk, min_cyc = warm (cache-hit) pass, max_cyc = cold (fill) pass.
+    # The RMW + matmul workloads (the cache-sensitive ones). For the RMW sweeps,
+    # min_cyc = warm (cache-hit) pass, max_cyc = cold (fill) pass.
     by_name = {m.name: m for m in metrics}
-    config = elf_cache_config(TEST_ELF)
+    cache_config = elf_cache_config(TEST_ELF)
     with path.open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["workload", "cache_config", "count", "mean_cyc", "min_cyc", "max_cyc"])
+        writer = csv.writer(f)
+        writer.writerow(["workload", "cache_config", "count", "mean_cyc", "min_cyc", "max_cyc"])
         for name in ("mem_walk_8k", "mem_walk_256k", "matmul_32"):
             m = by_name.get(name)
             if m:
-                w.writerow([m.name, config, m.count, m.mean, m.minimum, m.maximum])
+                writer.writerow([m.name, cache_config, m.count, m.mean, m.minimum, m.maximum])
 
 
 def write_edf_csv(path: Path, rows: Sequence[EDFResult]) -> None:
@@ -422,30 +425,37 @@ def plot_alloc(metrics: Sequence[Metric], path: Path) -> None:
 
 
 def plot_cache(metrics: Sequence[Metric], path: Path) -> None:
-    # 8 KB set fits L1, 256 KB exceeds L1 / fits L2. cold = max pass, warm = min pass.
+    # Left: RMW sweep, 8192-byte set (fits L1) and 262144-byte set (fits L2), two
+    # bars each -- cold = slowest pass (max), warm = fastest pass (min). Right: matmul.
     by_name = {m.name: m for m in metrics}
     matmul = by_name.get("matmul_32")
-    fig, (ax_mw, ax_mm) = plt.subplots(1, 2, figsize=(9, 4))
-    xs, heights, colors, tick_pos, tick_lbl = [], [], [], [], []
-    x = 0.0
+    fig, (ax_rmw, ax_mm) = plt.subplots(1, 2, figsize=(9, 4))
+
+    COLD_COLOR = "#c0504d"
+    WARM_COLOR = "#4f81bd"
+
+    bar_x, bar_height, bar_color = [], [], []
+    tick_x, tick_label = [], []
+    x_cursor = 0.0
     for size_label, name in (("8 KB", "mem_walk_8k"), ("256 KB", "mem_walk_256k")):
         m = by_name.get(name)
         if m is None:
             continue
-        xs += [x, x + 1.0]
-        heights += [m.maximum, m.minimum]
-        colors += ["#c0504d", "#4f81bd"]
-        tick_pos += [x, x + 1.0]
-        tick_lbl += [f"{size_label}\ncold", f"{size_label}\nwarm"]
-        x += 2.7
-    if xs:
-        ax_mw.bar(xs, heights, width=0.8, color=colors)
-        ax_mw.set_yscale("log")
-        ax_mw.set_xticks(tick_pos)
-        ax_mw.set_xticklabels(tick_lbl, fontsize=8)
-        ax_mw.set_title("SDRAM RMW / pass: cold vs warm")
-    ax_mw.set_ylabel("cycles (log)")
-    ax_mw.grid(axis="y", alpha=0.3, which="both")
+        # cold bar at x_cursor, warm bar one unit to its right.
+        bar_x      += [x_cursor, x_cursor + 1.0]
+        bar_height += [m.maximum, m.minimum]
+        bar_color  += [COLD_COLOR, WARM_COLOR]
+        tick_x     += [x_cursor, x_cursor + 1.0]
+        tick_label += [f"{size_label}\ncold", f"{size_label}\nwarm"]
+        x_cursor   += 2.7                              # gap before the next size's pair
+    if bar_x:
+        ax_rmw.bar(bar_x, bar_height, width=0.8, color=bar_color)
+        ax_rmw.set_yscale("log")
+        ax_rmw.set_xticks(tick_x)
+        ax_rmw.set_xticklabels(tick_label, fontsize=8)
+        ax_rmw.set_title("SDRAM RMW / pass: cold vs warm")
+    ax_rmw.set_ylabel("cycles (log)")
+    ax_rmw.grid(axis="y", alpha=0.3, which="both")
     if matmul is not None:
         ax_mm.bar([matmul.name], [matmul.mean],
                   yerr=[[matmul.mean - matmul.minimum], [matmul.maximum - matmul.mean]],

@@ -2,6 +2,7 @@
 #include "bsp.h"
 #include "preempt_sched.h"
 #include "tlsf.h"
+#include "pmu.h"
 #include "ktrace.h"
 
 
@@ -19,13 +20,23 @@ void cpu1_main(void)
 
 
 void allocbench_run(void);
+void rmw_run(void);
+void matmul_run(void);
 void edf_run(void);
 
 void main(void)
 {
 
 #if defined(MODE_TEST)
-    allocbench_run();
+    __asm__ __volatile__("cpsid if" ::: "memory");
+
+    allocbench_run();   /* slots 0-3 */
+    rmw_run();          /* slots 4-5 */
+    matmul_run();       /* slot 6   */
+
+
+    KTRACE_ALLOC_DONE();
+
     edf_run();
 #endif
 

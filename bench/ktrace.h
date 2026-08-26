@@ -19,7 +19,7 @@
  *
  * The address itself is the target -> host reason:
  *
- *     ktrace_bp_alloc_done  -> allocator benchmark complete
+ *     ktrace_bp_alloc_done  -> pre-EDF benchmark suite complete (alloc/rmw/matmul)
  *     ktrace_bp_edf_ready   -> current EDF trial configured
  *     ktrace_bp_edf_done    -> complete EDF sweep finished
  * ------------------------------------------------------------------------- */

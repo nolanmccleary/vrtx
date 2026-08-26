@@ -31,11 +31,12 @@ CORE := \
 	kernel/lock.c \
 	kernel/timers.c \
 	bench/ktrace.c \
-	bench/fault.c \
+	kernel/fault.c \
 	bench/telemetry.c \
 	bench/workload_edf.c \
 	bench/workload_allocbench.c \
-	bench/workload_compute.c
+	bench/workload_rmw.c \
+	bench/workload_matmul.c
 
 
 # ---------------------------------------------------------------------------
