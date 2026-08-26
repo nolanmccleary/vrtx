@@ -185,14 +185,14 @@ bss_zero:
     strlt r2, [r0], #4
     blt bss_zero
 
-@; Zero Host Shared
-    ldr r0, =_host_shared_start
-    ldr r1, =_host_shared_end
+@; Zero the OCRAM host island (fault records, boot gate, SMP mailbox)
+    ldr r0, =_host_shared_ocram_start
+    ldr r1, =_host_shared_ocram_end
     mov r2, #0
-host_shared_zero:
+host_ocram_zero:
     cmp r0, r1
     strlt r2, [r0], #4
-    blt host_shared_zero
+    blt host_ocram_zero
 
 @; SET CPU1 VBAR, CLEAR MAILBOX AND READY, RELEASE CPU1
 .if ENABLE_SMP != 0
@@ -210,12 +210,23 @@ host_shared_zero:
     bl ktrace_wait_boot
 .endif
     bl cpu0_startup         @; RUN CP0 STARTUP AND SET MAILBOX
-    ; cpsie i
-    ; ldr r0, =g_cpu_mailbox_uncached
-    ; mov r1, #1
-    ; str r1, [r0]
-    ; dsb
-    ; sev
+
+.if MODE_TEST != 0
+    ldr r0, =_host_shared_sdram_start
+    ldr r1, =_host_shared_sdram_end
+    mov r2, #0
+host_shared_sdram_zero:
+    cmp r0, r1
+    strlt r2, [r0], #4
+    blt host_shared_sdram_zero
+.endif
+
+    @; cpsie i
+    @; ldr r0, =g_cpu_mailbox_uncached
+    @; mov r1, #1
+    @; str r1, [r0]
+    @; dsb
+    @; sev
     bl main
 
 

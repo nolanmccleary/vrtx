@@ -15,11 +15,18 @@
 #define RMW_256KB_PASSES 16
 
 
+/* Per-pass cycle counts so the host can watch the cache warm up (pass 0 cold-fills,
+ * later passes hit cache). Row 0 = 8KB (64 passes), row 1 = 256KB (16 passes, rest
+ * left zero). Rows sized to the larger pass count. */
+HOST_SHARED uint32_t g_rmw_samples[2][RMW_8KB_PASSES];
+
+
 /* noinline so the two callers share one copy -- OCRAM is tight. Uncached SDRAM:
  * every access hits DDR (flat). Cacheable + a cache big enough for the working
  * set: pass 0 cold-fills, later passes hit cache; the gap is the win. */
 __attribute__((noinline))
-static void rmw_sweep(int metric_slot, int word_count, int pass_count)
+static void rmw_sweep(int metric_slot, int word_count, int pass_count,
+                      volatile uint32_t* pass_samples)
 {
     heap_init();
 
@@ -39,7 +46,7 @@ static void rmw_sweep(int metric_slot, int word_count, int pass_count)
             sweep_words[word_index] += 1u;
         }
 
-        MEASURE_END(metric_slot);
+        MEASURE_END_INTO(metric_slot, pass_samples[pass_index]);
     }
 
     kFree((void*)sweep_words);
@@ -53,6 +60,6 @@ void rmw_run(void)
     metric_reset(RMW_SLOT_8KB);
     metric_reset(RMW_SLOT_256KB);
 
-    rmw_sweep(RMW_SLOT_8KB,   RMW_8KB_WORDS,   RMW_8KB_PASSES);
-    rmw_sweep(RMW_SLOT_256KB, RMW_256KB_WORDS, RMW_256KB_PASSES);
+    rmw_sweep(RMW_SLOT_8KB,   RMW_8KB_WORDS,   RMW_8KB_PASSES,   g_rmw_samples[0]);
+    rmw_sweep(RMW_SLOT_256KB, RMW_256KB_WORDS, RMW_256KB_PASSES, g_rmw_samples[1]);
 }

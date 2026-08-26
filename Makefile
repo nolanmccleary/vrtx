@@ -80,7 +80,8 @@ CFLAGS := \
 	-DENABLE_NULL_GUARD=$(ENABLE_NULL_GUARD) \
 	-DBOOT_TEST=$(BOOT_TEST) \
 	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP) \
-	-Wa,--defsym,BOOT_TEST=$(BOOT_TEST)
+	-Wa,--defsym,BOOT_TEST=$(BOOT_TEST) \
+	-Wa,--defsym,MODE_TEST=1
 
 
 LDFLAGS := \

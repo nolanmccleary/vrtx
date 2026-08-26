@@ -21,6 +21,10 @@
 HOST_SHARED volatile uint32_t g_matmul_checksum;
 
 
+/* Per-rep cycle counts so the host can watch the I-cache warm up (rep 0 cold). */
+HOST_SHARED uint32_t g_matmul_samples[MATMUL_REPS];
+
+
 void matmul_run(void)
 {
     metric_reset(MATMUL_SLOT);
@@ -58,7 +62,7 @@ void matmul_run(void)
             }
         }
 
-        MEASURE_END(MATMUL_SLOT);
+        MEASURE_END_INTO(MATMUL_SLOT, g_matmul_samples[rep_index]);
 
         for (int element_index = 0; element_index < MATMUL_DIM * MATMUL_DIM; element_index++)
         {

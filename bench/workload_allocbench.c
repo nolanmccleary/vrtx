@@ -9,17 +9,25 @@
 #define ALLOC_ITERS         512
 
 
-/* g_metrics slots -> "malloc" / "free" / "malloc_loaded" / "free_loaded" (test.py) */
+/* g_metrics slots -> "malloc" / "free" / "malloc_loaded" / "free_loaded" (test.py).
+ * ALLOC_OP_COUNT is the terminal count, used to size the per-iteration sample table. */
 typedef enum
 {
     MALLOC = 0,
     FREE,
     MALLOC_LOADED,
-    FREE_LOADED
+    FREE_LOADED,
+    ALLOC_OP_COUNT
 } malloc_op_e;
 
 
 static void* loaded_blocks[LOADED_ALLOC_COUNT];
+
+
+/* Every per-iteration cycle count, so the host can plot the full timing
+ * distribution (the g_metrics slots keep only min/max/mean). SDRAM-resident
+ * (8192 bytes); the host reads ALLOC_ITERS samples per op. */
+HOST_SHARED uint32_t g_alloc_samples[ALLOC_OP_COUNT][ALLOC_ITERS];
 
 
 void allocbench_run(void)
@@ -45,14 +53,14 @@ void allocbench_run(void)
 
         block = kMalloc(ALLOC_SIZE_BYTES);
 
-        MEASURE_END(MALLOC);
+        MEASURE_END_INTO(MALLOC, g_alloc_samples[MALLOC][i]);
 
 
         MEASURE_BEGIN(FREE);
 
         kFree(block);
 
-        MEASURE_END(FREE);
+        MEASURE_END_INTO(FREE, g_alloc_samples[FREE][i]);
     }
 
 
@@ -78,14 +86,14 @@ void allocbench_run(void)
 
         block = kMalloc(ALLOC_SIZE_BYTES);
 
-        MEASURE_END(MALLOC_LOADED);
+        MEASURE_END_INTO(MALLOC_LOADED, g_alloc_samples[MALLOC_LOADED][i]);
 
 
         MEASURE_BEGIN(FREE_LOADED);
 
         kFree(block);
 
-        MEASURE_END(FREE_LOADED);
+        MEASURE_END_INTO(FREE_LOADED, g_alloc_samples[FREE_LOADED][i]);
     }
 
 

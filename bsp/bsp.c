@@ -167,11 +167,19 @@ static void build_tables(void)
 
     uint32_t sdram_block_count = (uint32_t)(uintptr_t)_sdram_length / L1_BLOCK_SIZE_BYTES;
 
+    /* The bulk telemetry block lives in SDRAM but must be Device (JTAG-coherent),
+       not cacheable like the rest of DDR. Its linker section is one 1MB block. */
+    extern char _host_shared_sdram_start[];
+    extern char _host_shared_sdram_end[];
+    uint32_t sdram_hs_start = (uint32_t)(uintptr_t)_host_shared_sdram_start;
+    uint32_t sdram_hs_end   = (uint32_t)(uintptr_t)_host_shared_sdram_end;
+
 #if ENABLE_ICACHE
     uint32_t delegated_block = (uint32_t)(uintptr_t)_ocram_origin >> L1_BLOCK_ADDR_SHIFT;
 #endif
 
-    /* Map each block directly: SDRAM blocks cacheable, every other block device. */
+    /* Map each block directly: SDRAM cacheable, the SDRAM telemetry block Device,
+       every block beyond DDR Device. */
     for (uint32_t l1_block = 0; l1_block < L1_BLOCK_COUNT; l1_block++)
     {
 
@@ -180,8 +188,11 @@ static void build_tables(void)
             continue;                 /* handled by the L2 delegation below, not here */
 #endif
 
-        uint32_t l1_block_base = l1_block << L1_BLOCK_ADDR_SHIFT;
-        uint32_t l1_entry      = (l1_block < sdram_block_count) ? L1_ENTRY_MAP_BLOCK_CACHEABLE : L1_ENTRY_MAP_BLOCK_DEVICE;
+        uint32_t l1_block_base  = l1_block << L1_BLOCK_ADDR_SHIFT;
+        bool     in_sdram       = (l1_block < sdram_block_count);
+        bool     in_host_shared = (l1_block_base >= sdram_hs_start) && (l1_block_base < sdram_hs_end);
+        uint32_t l1_entry       = (in_sdram && !in_host_shared) ? L1_ENTRY_MAP_BLOCK_CACHEABLE
+                                                                : L1_ENTRY_MAP_BLOCK_DEVICE;
         l1_table[l1_block] = l1_block_base | l1_entry;
     }
 
@@ -192,15 +203,15 @@ static void build_tables(void)
 #if ENABLE_ICACHE
     /* Fill the L2 table for the delegated block (0xFFF00000..0xFFFFFFFF, which holds
        the boot ROM, GIC/timer, and OCRAM). Rule: ALL of OCRAM (>= _ocram_origin) is
-       Normal-cacheable -- text/data/bss/stacks -- EXCEPT the host_shared window, which
+       Normal-cacheable -- text/data/bss/stacks -- EXCEPT the host_ocram island, which
        stays Device so JTAG reads/writes it coherently. Everything below OCRAM in the
        block (boot ROM, GIC, timer) is Device. This L2 table is the SOLE source of
        memory type for the block. */
-    extern char _host_shared_start[];
-    extern char _host_shared_end[];
+    extern char _host_shared_ocram_start[];
+    extern char _host_shared_ocram_end[];
     uint32_t ocram_start = (uint32_t)(uintptr_t)_ocram_origin;
-    uint32_t hs_start    = (uint32_t)(uintptr_t)_host_shared_start;
-    uint32_t hs_end      = (uint32_t)(uintptr_t)_host_shared_end;
+    uint32_t hs_start    = (uint32_t)(uintptr_t)_host_shared_ocram_start;
+    uint32_t hs_end      = (uint32_t)(uintptr_t)_host_shared_ocram_end;
 
     volatile uint32_t *l2_table = _l2_table_base;
 

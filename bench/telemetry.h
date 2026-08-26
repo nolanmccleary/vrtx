@@ -7,12 +7,17 @@
 #include "pmu.h"
 
 
-/* Place a global in the uncached, JTAG-coherent host_shared region (linker
- * .telemetry). Now that all other OCRAM (text/data/bss/stacks) is Normal-
- * cacheable, anything the debugger reads or writes must be marked HOST_SHARED --
- * either a value written directly here, or a mirror of a cached global that a
- * per-tick commit (ktrace_edf_tick) clones in. */
-#define HOST_SHARED __attribute__((section(".telemetry"), used))
+/* Two uncached, JTAG-coherent host regions (everything else -- text/data/bss/
+ * stacks/heap -- is Normal-cacheable, so anything the debugger reads/writes must
+ * live in one of these). Both are Device-mapped by build_tables().
+ *
+ *   HOST_SHARED       -> .telemetry, in SDRAM. Bulk benchmark/EDF telemetry,
+ *                        written only after SDRAM is calibrated and mapped.
+ *   HOST_SHARED_OCRAM -> .host_ocram, in OCRAM. The few globals that must be
+ *                        reachable when SDRAM is not: crash records, the
+ *                        pre-c_startup boot gate, and the SMP bring-up mailbox. */
+#define HOST_SHARED       __attribute__((section(".telemetry"), used))
+#define HOST_SHARED_OCRAM __attribute__((section(".host_ocram"), used))
 
 
 /* -------------------------------------------------------------------------
@@ -69,6 +74,15 @@ static inline void metric_add(int slot, uint32_t cycles)
 
 #define MEASURE_END(id) \
     metric_add((id), pmu_cycles() - _mt_##id)
+
+/* Like MEASURE_END, but also stores the raw per-iteration delta into `dst` (any
+ * lvalue) so the host can plot the full distribution, not just min/max. */
+#define MEASURE_END_INTO(id, dst) \
+    do { \
+        uint32_t _dt_##id = pmu_cycles() - _mt_##id; \
+        metric_add((id), _dt_##id); \
+        (dst) = _dt_##id; \
+    } while (0)
 
 
 #endif

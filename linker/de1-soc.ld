@@ -29,6 +29,11 @@ _bank_size = 0x80;
 _heap_offset = 0x200000;
 _heap_size   = 0x01000000;
 
+/* host_shared telemetry sits in its own 1MB SDRAM block directly above the heap
+ * (0x1200000). build_tables() maps that block Device so JTAG phys reads are
+ * coherent with CPU writes. */
+_host_shared_offset = _heap_offset + _heap_size;
+
 
 _preloader_header_offset = 0x40;
 _preloader_header_size   = 0x0C;
@@ -76,6 +81,22 @@ SECTIONS
 
 
 
+    /* Bulk host-readable telemetry -- its own 1MB Device-mapped SDRAM block,
+     * directly above the heap. NOLOAD: firmware writes it at runtime. */
+    .host_shared ORIGIN(SDRAM) + _host_shared_offset (NOLOAD) :
+    {
+        _host_shared_sdram_start = .;
+
+        KEEP(*(.telemetry))
+
+        . = ALIGN(8);
+
+        _host_shared_sdram_end = .;
+    } > SDRAM
+
+
+
+
     .itext ORIGIN(OCRAM) :
     {
         _itext_start = .;
@@ -97,16 +118,19 @@ SECTIONS
 
 
 
-    .host_shared ALIGN(0x1000) (NOLOAD) :
+    /* OCRAM host island: only what must be reachable when SDRAM is not --
+     * crash records (.fault), the pre-c_startup boot gate, and the SMP mailbox
+     * (.host_ocram). Device-mapped by the L2 loop in build_tables(). */
+    .host_ocram ALIGN(0x1000) (NOLOAD) :
     {
-        _host_shared_start = .;
+        _host_shared_ocram_start = .;
 
-        KEEP(*(.telemetry))
+        KEEP(*(.host_ocram))
         . = ALIGN(8);
         KEEP(*(.fault))
 
         . = ALIGN(0x1000);
-        _host_shared_end = .;
+        _host_shared_ocram_end = .;
     } > OCRAM
 
 
@@ -213,10 +237,21 @@ SECTIONS
     ASSERT(_preloader_header == ORIGIN(OCRAM) + 0x40,
         "mkpimage header hole is not at image offset 0x40")
 
-    ASSERT((_host_shared_start & (0x1000 - 1)) == 0,
-        "host_shared does not start on a 4096-byte page boundary")
-    ASSERT((_host_shared_end & (0x1000 - 1)) == 0,
-        "host_shared does not end on a 4096-byte page boundary")
+    ASSERT((_host_shared_ocram_start & (0x1000 - 1)) == 0,
+        "host_ocram island does not start on a 4096-byte page boundary")
+    ASSERT((_host_shared_ocram_end & (0x1000 - 1)) == 0,
+        "host_ocram island does not end on a 4096-byte page boundary")
+
+    /* SDRAM host_shared occupies one 1MB block that build_tables() maps Device;
+       it must be 1MB-aligned, clear of the heap, one block wide, and inside DDR. */
+    ASSERT((_host_shared_sdram_start & (0x100000 - 1)) == 0,
+        "SDRAM host_shared does not start on a 1MB block boundary")
+    ASSERT(_host_shared_sdram_start >= _heap_end,
+        "SDRAM host_shared overlaps the heap")
+    ASSERT((_host_shared_sdram_end - _host_shared_sdram_start) <= 0x100000,
+        "SDRAM host_shared exceeds its 1MB Device block")
+    ASSERT(_host_shared_sdram_end <= ORIGIN(SDRAM) + _sdram_length,
+        "SDRAM host_shared extends past the end of DDR")
     ASSERT((_itext_start & (0x1000 - 1)) == 0,
         "itext (code) does not start on a 4096-byte page boundary")
     ASSERT((_itext_end & (0x1000 - 1)) == 0,

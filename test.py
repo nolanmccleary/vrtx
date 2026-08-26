@@ -34,6 +34,21 @@ METRIC_SIZE   = METRIC_STRUCT.size
 ALLOC_NAMES   = ["malloc", "free", "malloc_loaded", "free_loaded",
                  "mem_walk_8k", "mem_walk_256k", "matmul_32"]
 
+# g_alloc_samples[ALLOC_OP_COUNT][ALLOC_ITERS] u32 : every per-iteration cycle
+# count for the four allocator ops, for the timing-distribution plot. Dimensions
+# must match ALLOC_OP_COUNT / ALLOC_ITERS in workload_allocbench.c.
+ALLOC_SAMPLE_OPS   = ALLOC_NAMES[:4]
+ALLOC_SAMPLE_ITERS = 512
+
+# g_rmw_samples[2][RMW_ROW_LEN] u32 : per-pass cycle counts for the two RMW sweeps
+# (row 0 = 8KB/64 passes, row 1 = 256KB/16 passes). Must match workload_rmw.c.
+RMW_ROW_LEN    = 64
+RMW_ROW_PASSES = [64, 16]
+RMW_LABELS     = ["8 KB (fits L1)", "256 KB (fits L2)"]
+
+# g_matmul_samples[MATMUL_REPS] u32 : per-rep cycle counts. Must match workload_matmul.c.
+MATMUL_REPS = 8
+
 # g_edf_metrics[NTASKS] metrics_t : ci, ci_av, prev_cycles, delta_sum, ti, ti_av, t0
 EDF_METRIC_STRUCT = struct.Struct("<7I")
 EDF_METRIC_SIZE   = EDF_METRIC_STRUCT.size
@@ -246,7 +261,8 @@ class OCD:
         out = self.cmd("reg pc")
         m = re.search(r"0x([0-9a-fA-F]+)", out)
         if m is None:
-            raise RuntimeError(f"cannot parse PC: {out}")
+            raise RuntimeError(f"cannot read PC -- core not halted or in reset "
+                               f"(crash/WDT loop before the gate?): reg pc -> {out!r}")
         return int(m.group(1), 16)
 
     def dump_pcs(self) -> str:
@@ -325,6 +341,31 @@ def collect_alloc(ocd: OCD, base: int) -> tuple[Metric, ...]:
     return tuple(read_metric(ocd, base, i) for i in range(ALLOC_METRICS))
 
 
+def collect_alloc_samples(ocd: OCD, base: int) -> dict[str, list[int]]:
+    # g_alloc_samples is row-major [op][iter]; slice one op's ALLOC_ITERS run at a time.
+    words = ocd.read_words(base, len(ALLOC_SAMPLE_OPS) * ALLOC_SAMPLE_ITERS)
+    samples: dict[str, list[int]] = {}
+    for op_index, op_name in enumerate(ALLOC_SAMPLE_OPS):
+        start = op_index * ALLOC_SAMPLE_ITERS
+        samples[op_name] = words[start:start + ALLOC_SAMPLE_ITERS]
+    return samples
+
+
+def collect_rmw_samples(ocd: OCD, base: int) -> dict[str, list[int]]:
+    # g_rmw_samples is row-major [2][RMW_ROW_LEN]; each row holds RMW_ROW_PASSES[r]
+    # valid passes (the 256KB row is shorter, trailing entries stay zero).
+    words = ocd.read_words(base, 2 * RMW_ROW_LEN)
+    samples: dict[str, list[int]] = {}
+    for row in range(2):
+        start = row * RMW_ROW_LEN
+        samples[RMW_LABELS[row]] = words[start:start + RMW_ROW_PASSES[row]]
+    return samples
+
+
+def collect_matmul_samples(ocd: OCD, base: int) -> dict[str, list[int]]:
+    return {"matmul_32": ocd.read_words(base, MATMUL_REPS)}
+
+
 def expected_jobs(ticks: int, period: int) -> int:
     # First release is on tick 1: 1, 1+T, 1+2T, ...
     return ((ticks - 1) // period) + 1 if ticks else 0
@@ -377,6 +418,19 @@ def write_alloc_csv(path: Path, metrics: Sequence[Metric]) -> None:
             w.writerow([m.name, m.count, m.mean, m.minimum, m.maximum])
 
 
+def write_samples_csv(path: Path, series: dict[str, list[int]]) -> None:
+    # One column per series, one row per iteration -- the raw data behind a warm-up
+    # plot. Series may differ in length (e.g. the two RMW sweeps); shorter ones are
+    # padded with blanks.
+    names = list(series)
+    rows = max((len(v) for v in series.values()), default=0)
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["iter", *names])
+        for i in range(rows):
+            w.writerow([i, *(series[n][i] if i < len(series[n]) else "" for n in names)])
+
+
 def write_cache_csv(path: Path, metrics: Sequence[Metric]) -> None:
     # The RMW + matmul workloads (the cache-sensitive ones). For the RMW sweeps,
     # min_cyc = warm (cache-hit) pass, max_cyc = cold (fill) pass.
@@ -419,6 +473,30 @@ def plot_alloc(metrics: Sequence[Metric], path: Path) -> None:
     ax.set_ylabel("cycles")
     ax.set_title(f"Allocator operation cost  ({elf_cache_config(TEST_ELF)})")
     ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def plot_warmup(series: dict[str, list[int]], path: Path, title: str,
+                xlabel: str = "iteration") -> None:
+    # Cycles vs iteration index, one line per series. The allocator/cache workloads
+    # are near-deterministic once warm, so the story is the cold-start transient
+    # (first iteration cold-fills cache); a log-y line plot shows it far better
+    # than a histogram, where 99%+ of the mass collapses onto one bar.
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for name, values in series.items():
+        if not values:
+            continue
+        # markers help on short (per-pass/per-rep) series; long runs read as a line.
+        marker = "o" if len(values) <= 64 else None
+        ax.plot(range(len(values)), values, marker=marker, ms=4, linewidth=1.2, label=name)
+    ax.set_yscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("cycles (log)")
+    ax.set_title(f"{title}  ({elf_cache_config(TEST_ELF)})")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3, which="both")
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
@@ -540,14 +618,20 @@ def plot_gantt(trace: Sequence[int], periods: Sequence[int], path: Path, u_permi
 
 
 # --- phases -----------------------------------------------------------------
-def allocbench(ocd: OCD, symbols: dict[str, int]) -> list[Metric]:
+def allocbench(ocd: OCD, symbols: dict[str, int]) -> tuple[list[Metric], dict[str, dict[str, list[int]]]]:
     bp = symbols["ktrace_bp_alloc_done"]
     ocd.add_hw_breakpoint(bp)
     ocd.resume()
     ocd.expect_breakpoint(bp, timeout=30.0)
     metrics = collect_alloc(ocd, symbols["g_metrics"])
+    # All three per-iteration sample buffers are populated by this single breakpoint.
+    warmup = {
+        "alloc":  collect_alloc_samples(ocd, symbols["g_alloc_samples"]),
+        "rmw":    collect_rmw_samples(ocd, symbols["g_rmw_samples"]),
+        "matmul": collect_matmul_samples(ocd, symbols["g_matmul_samples"]),
+    }
     print_alloc(metrics)
-    return list(metrics)
+    return list(metrics), warmup
 
 
 def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
@@ -613,13 +697,28 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
 
 
 def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list[EDFResult],
-                    traces: dict[int, bytes], periods: tuple[int, ...], cpu1_trace: bytes = b"") -> None:
+                    traces: dict[int, bytes], periods: tuple[int, ...], cpu1_trace: bytes = b"",
+                    warmup: dict[str, dict[str, list[int]]] | None = None) -> None:
     # A skipped phase leaves its list empty and is simply not written.
     if alloc_metrics:
         write_alloc_csv(outdir / "alloc.csv", alloc_metrics[:4])
         write_cache_csv(outdir / "cache_workloads.csv", alloc_metrics)
         plot_alloc(alloc_metrics[:4], outdir / "alloc_timing.png")
         plot_cache(alloc_metrics, outdir / "cache_workloads.png")
+    if warmup:
+        # Per-iteration cost vs iteration index -- the cache/allocator warm-up curves.
+        if warmup.get("alloc"):
+            write_samples_csv(outdir / "alloc_samples.csv", warmup["alloc"])
+            plot_warmup(warmup["alloc"], outdir / "alloc_warmup.png",
+                        "Allocator op cost per iteration")
+        if warmup.get("rmw"):
+            write_samples_csv(outdir / "rmw_samples.csv", warmup["rmw"])
+            plot_warmup(warmup["rmw"], outdir / "rmw_warmup.png",
+                        "SDRAM RMW cost per pass (cache warm-up)", xlabel="pass")
+        if warmup.get("matmul"):
+            write_samples_csv(outdir / "matmul_samples.csv", warmup["matmul"])
+            plot_warmup(warmup["matmul"], outdir / "matmul_warmup.png",
+                        "matmul cost per rep (I-cache warm-up)", xlabel="rep")
 
     if not edf_results:
         return
@@ -667,6 +766,7 @@ def main(bootable: bool = False) -> None:
         "_reset_handler", "g_metrics", "g_edf_metrics", "g_ticks_m", "g_misses_m", "g_overhead_m",
         "g_edf_u_values", "g_edf_u_count", "g_edf_u_index", "g_edf_u_permille",
         "g_edf_periods", "g_edf_C", "g_edf_done", "g_sched_trace", "g_trace_len", "g_test_release",
+        "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
         "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
@@ -680,6 +780,7 @@ def main(bootable: bool = False) -> None:
     print(f"artifacts -> {outdir}\n")
 
     alloc_metrics: list[Metric] = []
+    warmup: dict[str, dict[str, list[int]]] = {}
     edf_results: list[EDFResult] = []
     traces: dict[int, bytes] = {}
     cpu1_trace: bytes = b""
@@ -709,10 +810,10 @@ def main(bootable: bool = False) -> None:
             ocd.write_u32(symbols["g_boot_release"], 1)
 
         # Control panel: comment a phase to skip it (also comment its call in main.c).
-        alloc_metrics = allocbench(ocd, symbols)
+        alloc_metrics, warmup = allocbench(ocd, symbols)
         edf_results, traces, cpu1_trace = edf_test(ocd, symbols, num_cpus, periods, u_values)
 
-    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_trace)
+    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_trace, warmup)
     print(f"\nPASS   artifacts in {outdir}")
 
 

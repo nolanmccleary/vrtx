@@ -7,7 +7,7 @@
 /* Debugger WRITES these, CPU reads them -- a mirror can't serve a host write
  * into a cached read, so they must be plain-uncached (host_shared). Set at
  * runtime before use; the NOLOAD region isn't zeroed at boot. */
-HOST_SHARED volatile uint32_t g_test_release;
+HOST_SHARED_OCRAM volatile uint32_t g_test_release;
 
 
 #define KTRACE_BP_ATTR \
@@ -91,7 +91,7 @@ void ktrace_wait_release(void)
  * Zeroed on entry so an uninitialized/garbage value can't skip the gate; runs
  * before c_startup(), i.e. MMU + caches off, so the flag is plain physical
  * memory the debugger reads/writes coherently. */
-HOST_SHARED volatile uint32_t g_boot_release;
+HOST_SHARED_OCRAM volatile uint32_t g_boot_release;
 
 void ktrace_wait_boot(void)
 {
