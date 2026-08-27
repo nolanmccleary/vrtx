@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "irq.h"
+#include "lock.h"
 #include "min_heap.h"
 #include "thread.h"
 #include "thread_fifo.h"
@@ -17,11 +18,7 @@
 
 
 
-typedef enum
-{
-    CPU0 = 0,
-    CPU1 = 1,
-}   cpu_core_e;
+
 
 
 
@@ -41,8 +38,11 @@ typedef struct
     heap_t* relHeap;
     thread_t* curr_thread;
     thread_t* main_thread;
-    thread_fifo_t* incoming_threads;
+    mutex_t thread_mutex;
 
+    thread_fifo_t* incoming_threads;
+    thread_fifo_t* outgoing_threads;
+    
 }   cpu_t;
 
 

@@ -635,14 +635,16 @@ def allocbench(ocd: OCD, symbols: dict[str, int]) -> tuple[list[Metric], dict[st
 
 
 def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
-             periods: tuple[int, ...], u_values: tuple[int, ...]) -> tuple[list[EDFResult], dict[int, bytes], bytes]:
+             periods: tuple[int, ...], u_values: tuple[int, ...]
+             ) -> tuple[list[EDFResult], dict[int, bytes], dict[int, bytes]]:
     ocd.continue_from_breakpoint()          # off bp_alloc (or load); ready/done armed by main()
     bp_edf_ready = symbols["ktrace_bp_edf_ready"]
     bp_edf_done  = symbols["ktrace_bp_edf_done"]
     print_edf_header()
 
     edf_results: list[EDFResult] = []
-    traces: dict[int, bytes] = {}
+    traces: dict[int, bytes] = {}        # CPU0 schedule trace per trial (u_permille -> bytes)
+    cpu1_traces: dict[int, bytes] = {}   # CPU1 schedule trace per trial (both cores run concurrently)
 
     for trial, expected_u in enumerate(u_values):
         ocd.expect_breakpoint(bp_edf_ready, timeout=15.0)
@@ -662,11 +664,17 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
         edf_results.append(result)
         print_edf_result(result)
 
-        # CPU0 schedule trace this trial: g_sched_trace[0][.], g_trace_len[0].
-        # (CPU1 is idle during the CPU0 sweep -- its trace comes from phase B below.)
-        n = min(ocd.read_u32(symbols["g_trace_len"]), TRACE_TICKS)
-        if n:
-            traces[result.u_permille] = ocd.read_bytes(symbols["g_sched_trace"], n)
+        # Both cores run this trial concurrently, so grab both schedule traces from
+        # the same halt: g_sched_trace[core][.], g_trace_len[core]. The trace region
+        # is uncached and strongly-ordered, so a phys read sees a consistent prefix
+        # without halting CPU1 -- a trace_len of N means bytes [0,N) are committed.
+        n0 = min(ocd.read_u32(symbols["g_trace_len"]), TRACE_TICKS)
+        if n0:
+            traces[result.u_permille] = ocd.read_bytes(symbols["g_sched_trace"], n0)
+        if num_cpus > 1:
+            n1 = min(ocd.read_u32(symbols["g_trace_len"] + 4), TRACE_TICKS)   # g_trace_len[1]
+            if n1:
+                cpu1_traces[result.u_permille] = ocd.read_bytes(symbols["g_sched_trace"] + TRACE_TICKS, n1)
 
         # Release the sampled trial; let firmware run on to the next trial's bp_edf_ready.
         # It may already be sitting on it (short trial) -- only resume if it isn't.
@@ -680,24 +688,12 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
 
     ocd.expect_breakpoint(bp_edf_done, timeout=30.0)
 
-    # Phase B: CPU0 has seeded the edf_driver onto CPU1 and parked. CPU1 now runs its
-    # own u=0.7 workload alone (no concurrent allocation). Let it fill its trace, then
-    # snapshot g_sched_trace[1] / g_trace_len[1] on the CPU1 target for the CPU1 Gantt.
-    cpu1_trace = b""
-    if num_cpus > 1:
-        ocd.resume()                       # CPU0 -> its idle loop (keeps ticking, feeds the WDT)
-        time.sleep(3.0)                     # CPU1 accumulates its schedule trace
-        ocd.cmd("targets cv_hps.cpu1")
-        ocd.cmd("halt")
-        n = min(ocd.read_u32(symbols["g_trace_len"] + 4), TRACE_TICKS)   # g_trace_len[1]
-        cpu1_trace = ocd.read_bytes(symbols["g_sched_trace"] + TRACE_TICKS, n) if n else b""
-        ocd.cmd("targets cv_hps.cpu")
-
-    return edf_results, traces, cpu1_trace
+    return edf_results, traces, cpu1_traces
 
 
 def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list[EDFResult],
-                    traces: dict[int, bytes], periods: tuple[int, ...], cpu1_trace: bytes = b"",
+                    traces: dict[int, bytes], periods: tuple[int, ...],
+                    cpu1_traces: dict[int, bytes] | None = None,
                     warmup: dict[str, dict[str, list[int]]] | None = None) -> None:
     # A skipped phase leaves its list empty and is simply not written.
     if alloc_metrics:
@@ -737,17 +733,17 @@ def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list
 
     for u in sorted(labels):
         trace = traces.get(u)
-        if not trace:
-            continue
-        plot_gantt(trace, periods, outdir / f"edf_schedule_u{u / 1000:.3f}.png", u,
-                   u_configured=by_u[u].configured_u, task_u=by_u[u].measured_u_per_task,
-                   label=" / ".join(labels[u]))
+        if trace:
+            plot_gantt(trace, periods, outdir / f"edf_schedule_u{u / 1000:.3f}.png", u,
+                       u_configured=by_u[u].configured_u, task_u=by_u[u].measured_u_per_task,
+                       label=" / ".join(labels[u]))
 
-    # CPU1 Gantt at u=0.7 from the phase-B capture (per-core CPU1 metrics not mirrored yet
-    # -> no task-U labels). configured_u is the same u=0.7 the driver set up.
-    if cpu1_trace and COMFORTABLE_U in by_u:
-        plot_gantt(cpu1_trace, periods, outdir / f"edf_schedule_cpu1_u{COMFORTABLE_U / 1000:.3f}.png",
-                   COMFORTABLE_U, u_configured=by_u[COMFORTABLE_U].configured_u, label="CPU1")
+        # CPU1 ran the same trial concurrently; plot its Gantt from the same trial's
+        # capture. Per-core CPU1 metrics aren't mirrored -> no task-U labels.
+        cpu1 = (cpu1_traces or {}).get(u)
+        if cpu1:
+            plot_gantt(cpu1, periods, outdir / f"edf_schedule_cpu1_u{u / 1000:.3f}.png", u,
+                       u_configured=by_u[u].configured_u, label="CPU1")
 
     clean = [r for r in edf_results if r.misses == 0]
     if clean:
@@ -783,7 +779,7 @@ def main(bootable: bool = False) -> None:
     warmup: dict[str, dict[str, list[int]]] = {}
     edf_results: list[EDFResult] = []
     traces: dict[int, bytes] = {}
-    cpu1_trace: bytes = b""
+    cpu1_traces: dict[int, bytes] = {}
 
     with OCD() as ocd:
         if bootable:
@@ -811,9 +807,9 @@ def main(bootable: bool = False) -> None:
 
         # Control panel: comment a phase to skip it (also comment its call in main.c).
         alloc_metrics, warmup = allocbench(ocd, symbols)
-        edf_results, traces, cpu1_trace = edf_test(ocd, symbols, num_cpus, periods, u_values)
+        edf_results, traces, cpu1_traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
 
-    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_trace, warmup)
+    write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_traces, warmup)
     print(f"\nPASS   artifacts in {outdir}")
 
 

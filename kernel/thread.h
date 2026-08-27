@@ -11,6 +11,17 @@
 #define MODE_SYS          0x1F   /* CPSR mode bits forged into a new thread's SPSR (see prime_thread) */
 #define MAX_THREADS 100
 
+
+
+
+typedef enum
+{
+    CPU0 = 0,
+    CPU1 = 1,
+}   cpu_core_e;
+
+
+
 typedef enum
 {
     PENDING,
@@ -62,6 +73,8 @@ typedef struct __attribute__((aligned(8))) //Stack should start 8-aligned
     sys_exit_e (*func)();
 
     metrics_t metrics;
+
+    cpu_core_e core;
 }   thread_t;
 
 

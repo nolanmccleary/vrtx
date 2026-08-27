@@ -18,6 +18,7 @@
 static heap_t heap1[NUM_CPUS];
 static heap_t heap2[NUM_CPUS];
 static thread_fifo_t incoming_fifos[NUM_CPUS];
+static thread_fifo_t outgoing_fifos[NUM_CPUS];
 
 
 
@@ -25,14 +26,17 @@ static void thread_exit()
 {
     cpu_core_e core = curr_core();
 
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
     g_cpus[core].curr_thread->thread_status = FINISHED;
     switch_out(g_cpus[core].curr_thread);
+    unlock_mutex(&(g_cpus[core].thread_mutex));
     for (;;) {};
 }
 
 
 
 
+//assumes thread mutex is already held here
 static inline void prime_thread(thread_t* thread)
 {
     uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
@@ -84,6 +88,7 @@ sys_exit_e psched_core_init(void)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
     cpu_core_e core = curr_core();
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
 
     char* sp;
     __asm__ __volatile__ ("mov %0, sp" : "=r"(sp));
@@ -91,48 +96,70 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].missed_deadlines = 0;
 
     g_cpus[core].deadHeap = &heap1[core];
+    g_cpus[core].deadHeap->curr_index = 0;
+
     g_cpus[core].relHeap = &heap2[core];
+    g_cpus[core].relHeap->curr_index = 0;
+
+
     g_cpus[core].incoming_threads = &incoming_fifos[core];
+    g_cpus[core].outgoing_threads = &outgoing_fifos[core];
 
     initialize_fifo(g_cpus[core].incoming_threads);
+    initialize_fifo(g_cpus[core].outgoing_threads);
 
+    lock_mutex_persistent(&g_allocator_mutex);
     g_cpus[core].main_thread = (thread_t*)kMalloc(sizeof(thread_t));
+    unlock_mutex(&g_allocator_mutex);
+
     g_cpus[core].main_thread->thread_status = RUNNING;
     g_cpus[core].main_thread->sp = sp;
-
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
-
     g_cpus[core].sched_init = true;
 
-    __asm__ __volatile__("dmb sy" ::: "memory");
+    unlock_mutex(&(g_cpus[core].thread_mutex));
 
+    __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
+
     return SYS_OK;
 }
 
 
 
+// TODO: Fix kfree main thread stuff
 sys_exit_e psched_core_deinit(void)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
     cpu_core_e core = curr_core();
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
+    lock_mutex_persistent(&g_allocator_mutex);
 
 
     destroy_threads(g_cpus[core].incoming_threads);
 
     for (size_t i = 0; i < g_cpus[core].deadHeap->curr_index; i++)
     {
-        if (g_cpus[core].deadHeap->heap[i].thread != NULL) kFree(g_cpus[core].deadHeap->heap[i].thread);
+        if (g_cpus[core].deadHeap->heap[i].thread != NULL) 
+        {
+            kFree(g_cpus[core].deadHeap->heap[i].thread);
+        }
     }
 
     for (size_t i = 0; i < g_cpus[core].relHeap->curr_index; i++)
     {
-        if (g_cpus[core].relHeap->heap[i].thread != NULL) kFree(g_cpus[core].relHeap->heap[i].thread);
+        if (g_cpus[core].relHeap->heap[i].thread != NULL) 
+        {
+            kFree(g_cpus[core].relHeap->heap[i].thread);
+        }
     }
 
     kFree(g_cpus[core].main_thread);
+    unlock_mutex(&g_allocator_mutex);
 
     g_cpus[core].sched_init = false;
+
+    unlock_mutex(&(g_cpus[core].thread_mutex));
 
     __asm__ __volatile__("dmb sy" ::: "memory");
     __asm__ __volatile__("cpsie i" ::: "memory");
@@ -188,18 +215,29 @@ sys_exit_e psched_deinit(void)
 
 thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity)
 {
+    __asm__ __volatile__("cpsid i" ::: "memory");
 
+
+    lock_mutex_persistent(&g_allocator_mutex);
     thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
+    unlock_mutex(&g_allocator_mutex);
+
     new_thread->period = period;
     new_thread->periodicity = periodicity;
 
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
 
-    fifo_push(g_cpus[core].incoming_threads, new_thread);
-
     init_metrics(new_thread);
+    new_thread->core = core;
 
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
+    fifo_push(g_cpus[core].incoming_threads, new_thread);
+    unlock_mutex(&(g_cpus[core].thread_mutex));
+
+    __asm__ __volatile__("cpsie i" ::: "memory");
+
+    
     return new_thread;
 }
 
@@ -209,14 +247,17 @@ sys_exit_e kill_thread(thread_t* thread)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
 
-    cpu_core_e core = curr_core();
+    lock_mutex_persistent(&(g_cpus[thread->core].thread_mutex));
 
     thread->periodicity = APERIODIC;
     thread->thread_status = FINISHED;
-    if (thread == g_cpus[core].curr_thread)
-    {
-        next_thread();
-    }
+    unlock_mutex(&(g_cpus[thread->core].thread_mutex));
+    
+    // CLAIM: This is corrputing - must verify 
+    // if (thread == g_cpus[core].curr_thread)
+    // {
+    //     next_thread();
+    // }
 
     __asm__ __volatile__("cpsie i" ::: "memory");
 
@@ -226,14 +267,16 @@ sys_exit_e kill_thread(thread_t* thread)
 
 
 
-sys_exit_e psched_clear_threads(void)
+sys_exit_e psched_clear_threads(void) //Function is currently deprecated
 {
     cpu_core_e core = curr_core();
-
     thread_t *thread;
+
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
 
     destroy_threads(g_cpus[core].incoming_threads);
 
+    lock_mutex_persistent(&g_allocator_mutex);
     while (g_cpus[core].deadHeap->curr_index > 0)
     {
         pop_heap(g_cpus[core].deadHeap, &thread);
@@ -247,8 +290,10 @@ sys_exit_e psched_clear_threads(void)
         if (thread != NULL)
             kFree(thread);
     }
+    unlock_mutex(&g_allocator_mutex);
 
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
+    unlock_mutex(&(g_cpus[core].thread_mutex));
 
     return SYS_OK;
 }
@@ -261,162 +306,178 @@ inline void next_thread()
     uint32_t overhead = pmu_cycles();
     cpu_core_e core = curr_core();
 
-
-    if (g_cpus[core].sched_init)
+    if (lock_mutex_best_effort(&(g_cpus[core].thread_mutex)) == LOCK_OK)
     {
-
-        if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
-
-        g_cpus[core].ticks++;
-
-        __asm__ __volatile__ (
-            "cps #0x1F\n"
-            "mov %0, sp\n"
-            "cps #0x13\n"
-            : "=r"(g_cpus[core].curr_thread->sp)
-        );
-
-
-#ifdef MODE_TEST
-        /*
-        * Python finished sampling the current EDF trial.
-        *
-        * At overload, EDF may otherwise starve main forever.
-        * Force main in once so KTRACE_WAIT_RELEASE() can observe
-        * g_test_release and return.
-        */
-        if (KTRACE_RELEASE_PENDING())
+        if (g_cpus[core].sched_init)
         {
-            g_cpus[core].curr_thread = g_cpus[core].main_thread;
+
+            if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
+
+            g_cpus[core].ticks++;
 
             __asm__ __volatile__ (
                 "cps #0x1F\n"
-                "mov sp, %0\n"
-                "cps #0x13\n"
-                :
-                : "r"(g_cpus[core].main_thread->sp)
-                : "memory"
+                "mov %0, sp\n"
+                "cps #0x12\n"
+                : "=r"(g_cpus[core].curr_thread->sp)
             );
 
-            return;
-        }
-#endif
 
-        thread_t* thread;
-
-        while(g_cpus[core].incoming_threads->size > 0)
-        {
-            thread = fifo_pop(g_cpus[core].incoming_threads);
-
-            thread->release_time = g_cpus[core].ticks;
-            thread->deadline = g_cpus[core].ticks + thread->period;
-            thread->dirty = false;
-            thread->thread_status = PENDING;
-
-            insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
-        }
-
-
-        bool thread_found = false;
-
-        while (g_cpus[core].relHeap->curr_index > 0 && geq_wrapped(g_cpus[core].ticks, g_cpus[core].relHeap->heap[0].thread->release_time))
-        {
-            pop_heap(g_cpus[core].relHeap, &thread);
-            thread->dirty = false;
-            thread->thread_status = PENDING;
-            insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
-        }
-
-
-        while(g_cpus[core].deadHeap->curr_index > 0) //Find next runnable task, cache locked tasks on a deque before reinserting.
-        {
-            thread = g_cpus[core].deadHeap->heap[0].thread;
-
-            if (thread->thread_status == FINISHED)
+#ifdef MODE_TEST
+            /*
+            * Python finished sampling the current EDF trial.
+            *
+            * At overload, EDF may otherwise starve main forever.
+            * Force main in once so KTRACE_WAIT_RELEASE() can observe
+            * g_test_release and return.
+            */
+            if (KTRACE_RELEASE_PENDING())
             {
-                pop_heap(g_cpus[core].deadHeap, &thread);
+                g_cpus[core].curr_thread = g_cpus[core].main_thread;
 
-                if (thread->periodicity == PERIODIC)
-                {
-                    do
-                    {
-                        thread->deadline += thread->period;
-                    }   while (thread->deadline <= g_cpus[core].ticks);
-
-                    do
-                    {
-                        thread->release_time += thread->period;
-                    }   while (thread->release_time < thread->deadline - thread->period);
-
-                    if (geq_wrapped(g_cpus[core].ticks, thread->release_time)) //Will nominally fire on equality
-                    {
-                        thread->dirty = false;
-                        thread->thread_status = PENDING;
-                    }
-
-                    else //Add to release heap
-                    {
-                        insert_node(g_cpus[core].relHeap, thread, thread->release_time);
-                    }
-
-                }
-
-                else
-                {
-                    kFree(thread);
-                    continue;
-                }
-
-            }
-
-            if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
-            {
-                if (geq_wrapped(g_cpus[core].ticks, thread->deadline) && !thread->dirty)
-                {
-                    thread->dirty = true;
-                    g_cpus[core].missed_deadlines++;
-                }
-
-                g_cpus[core].curr_thread = thread;
-                thread_found = true;
-                break;
-            }
-        }
-
-
-        if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
-        {
-            g_cpus[core].curr_thread = g_cpus[core].main_thread;
-        }
-
-
-        switch_in(g_cpus[core].curr_thread);
-
-
-        KTRACE_TICK_EXIT(g_cpus[core].curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
-
-        switch (g_cpus[core].curr_thread->thread_status)
-        {
-            case PENDING:
-                prime_thread(g_cpus[core].curr_thread);
-                /* fall through */
-
-            case RUNNING:
                 __asm__ __volatile__ (
                     "cps #0x1F\n"
                     "mov sp, %0\n"
-                    "cps #0x13\n"
+                    "cps #0x12\n"
                     :
-                    : "r"(g_cpus[core].curr_thread->sp)
+                    : "r"(g_cpus[core].main_thread->sp)
+                    : "memory"
                 );
-                break;
 
-            default:
-                break;
+                unlock_mutex(&(g_cpus[core].thread_mutex));
+                return;
+            }
+#endif
+
+            thread_t* thread;
+
+            while(g_cpus[core].incoming_threads->size > 0)
+            {
+                thread = fifo_pop(g_cpus[core].incoming_threads);
+
+                thread->release_time = g_cpus[core].ticks;
+                thread->deadline = g_cpus[core].ticks + thread->period;
+                thread->dirty = false;
+                thread->thread_status = PENDING;
+
+                insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
+            }
+
+
+            bool thread_found = false;
+
+            while (g_cpus[core].relHeap->curr_index > 0 && geq_wrapped(g_cpus[core].ticks, g_cpus[core].relHeap->heap[0].thread->release_time))
+            {
+                pop_heap(g_cpus[core].relHeap, &thread);
+                thread->dirty = false;
+                thread->thread_status = PENDING;
+                insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
+            }
+
+
+            while(g_cpus[core].deadHeap->curr_index > 0)
+            {
+                thread = g_cpus[core].deadHeap->heap[0].thread;
+
+                if (thread->thread_status == FINISHED)
+                {
+                    pop_heap(g_cpus[core].deadHeap, &thread);
+
+                    if (thread->periodicity == PERIODIC)
+                    {
+                        do
+                        {
+                            thread->deadline += thread->period;
+                        }   while (thread->deadline <= g_cpus[core].ticks);
+
+                        do
+                        {
+                            thread->release_time += thread->period;
+                        }   while (thread->release_time < thread->deadline - thread->period);
+
+                        if (geq_wrapped(g_cpus[core].ticks, thread->release_time)) //Will nominally fire on equality
+                        {
+                            thread->dirty = false;
+                            thread->thread_status = PENDING;
+                        }
+
+                        else //Add to release heap
+                        {
+                            insert_node(g_cpus[core].relHeap, thread, thread->release_time);
+                        }
+
+                    }
+
+                    else
+                    {
+                        // kFree(thread);
+                        fifo_push(g_cpus[core].outgoing_threads, thread);
+
+                        continue;
+                    }
+
+                }
+
+                if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
+                {
+                    if (geq_wrapped(g_cpus[core].ticks, thread->deadline) && !thread->dirty)
+                    {
+                        thread->dirty = true;
+                        g_cpus[core].missed_deadlines++;
+                    }
+
+                    g_cpus[core].curr_thread = thread;
+                    thread_found = true;
+                    break;
+                }
+            }
+
+
+            if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
+            {
+                g_cpus[core].curr_thread = g_cpus[core].main_thread;
+            }
+
+
+            switch_in(g_cpus[core].curr_thread);
+
+
+            KTRACE_TICK_EXIT(g_cpus[core].curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
+
+            switch (g_cpus[core].curr_thread->thread_status)
+            {
+                case PENDING:
+                    prime_thread(g_cpus[core].curr_thread);
+                    /* fall through */
+
+                case RUNNING:
+                    __asm__ __volatile__ (
+                        "cps #0x1F\n"
+                        "mov sp, %0\n"
+                        "cps #0x12\n"
+                        :
+                        : "r"(g_cpus[core].curr_thread->sp)
+                    );
+                    break;
+
+                default:
+                    break;
+            }
+
+
+
+            if ((g_cpus[core].outgoing_threads->size > 0) && (lock_mutex_best_effort(&g_allocator_mutex) == LOCK_OK))
+            {
+                while (g_cpus[core].outgoing_threads->size > 0)
+                {
+                    kFree(fifo_pop(g_cpus[core].outgoing_threads));
+                }
+                unlock_mutex(&g_allocator_mutex);
+            }
         }
+
+        unlock_mutex(&(g_cpus[core].thread_mutex));
     }
-
-
 
     overhead = pmu_cycles() - overhead;
     update_cpu_metrics(core, overhead);

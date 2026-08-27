@@ -10,6 +10,11 @@
 
 
 
+mutex_t g_allocator_mutex;
+
+
+
+
 void *memset(void *s, int c, size_t n)   // freestanding build has no libc; sequencer.c and struct inits need it
 {
     unsigned char *p = s;

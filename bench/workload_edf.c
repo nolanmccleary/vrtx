@@ -90,11 +90,13 @@ static void do_work(uint32_t iters)
 }
 
 
+/* Both cores run these same jobs concurrently, but only CPU0's completions are
+ * tracked, so guard g_edf_done -- otherwise CPU1's jobs double-count it. */
 static sys_exit_e job0(void)
 {
     do_work(iters[0]);
 
-    g_edf_done[0]++;
+    if (curr_core() == CPU0) g_edf_done[0]++;
 
     return SYS_OK;
 }
@@ -104,7 +106,7 @@ static sys_exit_e job1(void)
 {
     do_work(iters[1]);
 
-    g_edf_done[1]++;
+    if (curr_core() == CPU0) g_edf_done[1]++;
 
     return SYS_OK;
 }
@@ -114,7 +116,7 @@ static sys_exit_e job2(void)
 {
     do_work(iters[2]);
 
-    g_edf_done[2]++;
+    if (curr_core() == CPU0) g_edf_done[2]++;
 
     return SYS_OK;
 }
@@ -270,32 +272,6 @@ static void reset_trial(void)
 }
 
 
-#define DRIVER_PERIOD  1000000u
-
-static sys_exit_e edf_driver(void)
-{
-    cpu_core_e core = curr_core();
-
-    uint32_t cycles_per_tick = measure_cycles_per_tick();
-    uint32_t cycles_per_iter = measure_cycles_per_iter();
-
-    configure_work(700u, cycles_per_tick, cycles_per_iter);
-
-    g_edf_u_permille  = 700u;
-    g_trace_len[core] = 0u;
-    trace_active      = 1u;
-
-    __asm__ __volatile__("cpsid i" ::: "memory");
-    for (uint32_t i = 0; i < NTASKS; i++)
-    {
-        add_thread_to_core(core, JOBS[i], g_edf_periods[i], PERIODIC);
-    }
-    __asm__ __volatile__("cpsie i" ::: "memory");
-
-    for (;;) {}
-}
-
-
 /* -------------------------------------------------------------------------
  * Benchmark
  * ------------------------------------------------------------------------- */
@@ -356,15 +332,15 @@ void edf_run(void)
         g_test_release = 0u;
 
         thread_t* handles0 [NTASKS];
+        thread_t* handles1 [NTASKS];
 
+        /* Both cores run the same workload concurrently. The allocator mutex makes
+         * the shared heap safe, and each core's thread_mutex makes the cross-core
+         * push into CPU1's incoming FIFO safe against CPU1's own scheduler. */
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            handles0[i] = add_thread_to_core(
-                CPU0,
-                JOBS[i],
-                g_edf_periods[i],
-                PERIODIC
-            );
+            handles0[i] = add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
+            handles1[i] = add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
         }
 
 
@@ -421,6 +397,7 @@ void edf_run(void)
         for (uint32_t i = 0; i < NTASKS; i++)
         {
             kill_thread(handles0[i]);
+            kill_thread(handles1[i]);
         }
 
 
@@ -432,11 +409,6 @@ void edf_run(void)
         );
     }
 
-
-    __asm__ __volatile__("cpsid i" ::: "memory");
-    add_thread_to_core(CPU1, edf_driver, DRIVER_PERIOD, APERIODIC);
-    __asm__ __volatile__("dmb sy" ::: "memory");
-    __asm__ __volatile__("cpsie i" ::: "memory");
 
     KTRACE_EDF_DONE();
 

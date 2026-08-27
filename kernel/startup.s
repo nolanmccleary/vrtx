@@ -330,7 +330,7 @@ _irq_handler:
     push {r1, lr} @; push adjustment and lr_sys onto sysmode stack
 
     
-    cps #0x13 @; switch to service mode to prevent clobbering of lr_irq or current sysmode stacks
+    cps #0x12
 
     BL _identify_and_clear_source @; get irq switch vector and ack interrupt (accepted + finished reading switch vector)
     BL c_irq_handler @; r0 injects arg1 of c func as per ARM ABI, set via identify_and_clear_source --- nominal routine switches sysmode sp from scheduler-managed pointer bank

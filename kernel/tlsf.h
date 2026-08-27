@@ -1,7 +1,9 @@
 #ifndef __TLSF_H__
 #define __TLSF_H__
 
-#include "stddef.h"
+#include <stddef.h>
+#include "lock.h"
+
 
 
 
@@ -13,6 +15,7 @@ typedef enum
 
 
 extern volatile bool g_heap_initialized;
+extern mutex_t g_allocator_mutex;
 
 
 allocator_op_e  heap_init(void);

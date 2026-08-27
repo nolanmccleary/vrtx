@@ -36,7 +36,8 @@ CORE := \
 	bench/workload_edf.c \
 	bench/workload_allocbench.c \
 	bench/workload_rmw.c \
-	bench/workload_matmul.c
+	bench/workload_matmul.c \
+	kernel/mutex.s \
 
 
 # ---------------------------------------------------------------------------
