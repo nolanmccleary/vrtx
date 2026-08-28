@@ -116,6 +116,7 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].main_thread->sp = sp;
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
     g_cpus[core].sched_init = true;
+    g_cpus[core].request_terminate = false;
 
     unlock_mutex(&(g_cpus[core].thread_mutex));
 
@@ -127,38 +128,13 @@ sys_exit_e psched_core_init(void)
 
 
 
-// TODO: Fix kfree main thread stuff
 sys_exit_e psched_core_deinit(void)
 {
     __asm__ __volatile__("cpsid i" ::: "memory");
     cpu_core_e core = curr_core();
+
     lock_mutex_persistent(&(g_cpus[core].thread_mutex));
-    lock_mutex_persistent(&g_allocator_mutex);
-
-
-    destroy_threads(g_cpus[core].incoming_threads);
-
-    for (size_t i = 0; i < g_cpus[core].deadHeap->curr_index; i++)
-    {
-        if (g_cpus[core].deadHeap->heap[i].thread != NULL) 
-        {
-            kFree(g_cpus[core].deadHeap->heap[i].thread);
-        }
-    }
-
-    for (size_t i = 0; i < g_cpus[core].relHeap->curr_index; i++)
-    {
-        if (g_cpus[core].relHeap->heap[i].thread != NULL) 
-        {
-            kFree(g_cpus[core].relHeap->heap[i].thread);
-        }
-    }
-
-    kFree(g_cpus[core].main_thread);
-    unlock_mutex(&g_allocator_mutex);
-
-    g_cpus[core].sched_init = false;
-
+    g_cpus[core].request_terminate = true;
     unlock_mutex(&(g_cpus[core].thread_mutex));
 
     __asm__ __volatile__("dmb sy" ::: "memory");
@@ -308,7 +284,7 @@ inline void next_thread()
 
     if (lock_mutex_best_effort(&(g_cpus[core].thread_mutex)) == LOCK_OK)
     {
-        if (g_cpus[core].sched_init)
+        if (g_cpus[core].sched_init && !g_cpus[core].request_terminate)
         {
 
             if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
@@ -475,6 +451,50 @@ inline void next_thread()
                 unlock_mutex(&g_allocator_mutex);
             }
         }
+
+        
+        else if (g_cpus[core].request_terminate && (lock_mutex_best_effort(&g_allocator_mutex) == LOCK_OK))
+        {
+            destroy_threads(g_cpus[core].incoming_threads);
+
+            for (size_t i = 0; i < g_cpus[core].deadHeap->curr_index; i++)
+            {
+                if (g_cpus[core].deadHeap->heap[i].thread != NULL) 
+                {
+                    kFree(g_cpus[core].deadHeap->heap[i].thread);
+                }
+            }
+            g_cpus[core].deadHeap->curr_index = 0;
+
+            
+            for (size_t i = 0; i < g_cpus[core].relHeap->curr_index; i++)
+            {
+                if (g_cpus[core].relHeap->heap[i].thread != NULL) 
+                {
+                    kFree(g_cpus[core].relHeap->heap[i].thread);
+                }
+            }
+            g_cpus[core].relHeap->curr_index = 0;
+
+
+            __asm__ __volatile__ (
+                "cps #0x1F\n"
+                "mov sp, %0\n"
+                "cps #0x12\n"
+                "dmb sy\n"
+                :
+                : "r"(g_cpus[core].main_thread->sp)
+                : "memory"
+            );
+            kFree(g_cpus[core].main_thread);
+
+
+            g_cpus[core].sched_init = false;
+            g_cpus[core].request_terminate = false;
+
+            unlock_mutex(&g_allocator_mutex);
+        }
+
 
         unlock_mutex(&(g_cpus[core].thread_mutex));
     }

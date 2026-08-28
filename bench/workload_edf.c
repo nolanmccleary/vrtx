@@ -410,6 +410,10 @@ void edf_run(void)
     }
 
 
+    /* Sweep complete on both cores -- tear the scheduler back down (CPU0 locally +
+     * IPI to CPU1), mirroring the psched_init() at the top. */
+    psched_deinit();
+
     KTRACE_EDF_DONE();
 
     for (;;) {}

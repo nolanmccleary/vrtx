@@ -39,6 +39,7 @@ typedef struct
     thread_t* curr_thread;
     thread_t* main_thread;
     mutex_t thread_mutex;
+    bool request_terminate;
 
     thread_fifo_t* incoming_threads;
     thread_fifo_t* outgoing_threads;
