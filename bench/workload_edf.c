@@ -284,7 +284,6 @@ void edf_run(void)
      * allocbench destroyed its heap before returning.
      */
     heap_init();
-    psched_init();
 
     for (uint32_t c = 0; c < NUM_CPUS; c++)
     {
@@ -299,12 +298,26 @@ void edf_run(void)
     }
 
 
-    uint32_t cycles_per_tick = measure_cycles_per_tick();
-    uint32_t cycles_per_iter = measure_cycles_per_iter();
+    uint32_t cycles_per_tick = 0u;
+    uint32_t cycles_per_iter = 0u;
 
 
     for (uint32_t trial = 0; trial < g_edf_u_count; trial++)
     {
+        /*
+         * Bring the scheduler up fresh for this trial (both cores). psched_deinit()
+         * at the trial's end tears it all back down -- fresh heaps + main_thread,
+         * no cross-trial carryover, and it replaces the per-task kill loop.
+         */
+        psched_init();
+
+        if (trial == 0)   // calibrate once; needs the scheduler ticking for rd_ticks()
+        {
+            cycles_per_tick = measure_cycles_per_tick();
+            cycles_per_iter = measure_cycles_per_iter();
+        }
+
+
         /*
          * Trial construction must not race the scheduler.
          */
@@ -331,16 +344,13 @@ void edf_run(void)
 
         g_test_release = 0u;
 
-        thread_t* handles0 [NTASKS];
-        thread_t* handles1 [NTASKS];
-
         /* Both cores run the same workload concurrently. The allocator mutex makes
          * the shared heap safe, and each core's thread_mutex makes the cross-core
          * push into CPU1's incoming FIFO safe against CPU1's own scheduler. */
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            handles0[i] = add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
-            handles1[i] = add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
+            add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
+            add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
         }
 
 
@@ -383,36 +393,12 @@ void edf_run(void)
 
 
         /*
-         * Remove this trial before constructing the next one.
+         * Tear the whole scheduler down (both cores) before the next trial --
+         * frees every task + main_thread; replaces the per-task kill loop.
          */
-        __asm__ __volatile__(
-            "cpsid i"
-            :
-            :
-            : "memory"
-        );
-
-
-        // psched_clear_threads();
-        for (uint32_t i = 0; i < NTASKS; i++)
-        {
-            kill_thread(handles0[i]);
-            kill_thread(handles1[i]);
-        }
-
-
-        __asm__ __volatile__(
-            "cpsie i"
-            :
-            :
-            : "memory"
-        );
+        psched_deinit();
     }
 
-
-    /* Sweep complete on both cores -- tear the scheduler back down (CPU0 locally +
-     * IPI to CPU1), mirroring the psched_init() at the top. */
-    psched_deinit();
 
     KTRACE_EDF_DONE();
 

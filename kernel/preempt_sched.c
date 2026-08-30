@@ -163,7 +163,7 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
 
     __asm__ __volatile__("cpsie i" ::: "memory");
 
-    
+
     return new_thread;
 }
 
@@ -178,8 +178,8 @@ sys_exit_e kill_thread(thread_t* thread)
     thread->periodicity = APERIODIC;
     thread->thread_status = FINISHED;
     unlock_mutex(&(g_cpus[thread->core].thread_mutex));
-    
-    // CLAIM: This is corrputing - must verify 
+
+    // CLAIM: This is corrputing - must verify
     // if (thread == g_cpus[core].curr_thread)
     // {
     //     next_thread();
@@ -438,9 +438,9 @@ static inline bool next_up(cpu_core_e core)
         }
 
 
-        else
+        else if (thread->thread_status != FINISHED)
         {
-            raise_error_ctx("next_up: thread status corrupted", (uint32_t)(uintptr_t)thread);
+            raise_error("next_up: thread status corrupted");
         }
     }
 
