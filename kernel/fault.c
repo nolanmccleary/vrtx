@@ -5,6 +5,35 @@
 
 fault_record_t g_fault[NUM_CPUS] __attribute__((section(".fault"), used));
 
+char     g_error_message[NUM_CPUS][FAULT_MSG_LEN] __attribute__((section(".fault"), used));
+uint32_t g_error_ctx[NUM_CPUS]                    __attribute__((section(".fault"), used));
+
+
+void raise_error_ctx(const char* message, uint32_t ctx)
+{
+    cpu_core_e core = curr_core();
+    char* dst = g_error_message[core];
+
+    int i = 0;
+    while (i < FAULT_MSG_LEN - 1 && message[i] != '\0')
+    {
+        dst[i] = message[i];
+        i++;
+    }
+    dst[i] = '\0';
+
+    g_error_ctx[core] = ctx;
+
+    __asm__ volatile("dmb sy" ::: "memory");
+    __asm__ volatile("udf #0" ::: "memory");
+}
+
+
+void raise_error(const char* message)
+{
+    raise_error_ctx(message, 0u);
+}
+
 
 static inline uint32_t rd_dfsr(void) { uint32_t v; __asm__ volatile("mrc p15,0,%0,c5,c0,0" : "=r"(v)); return v; }
 static inline uint32_t rd_dfar(void) { uint32_t v; __asm__ volatile("mrc p15,0,%0,c6,c0,0" : "=r"(v)); return v; }

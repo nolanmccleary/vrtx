@@ -11,6 +11,8 @@
 #include "min_heap.h"
 #include "thread_fifo.h"
 #include "ktrace.h"
+#include "fault.h"
+#include "telemetry.h"
 
 
 
@@ -19,58 +21,6 @@ static heap_t heap1[NUM_CPUS];
 static heap_t heap2[NUM_CPUS];
 static thread_fifo_t incoming_fifos[NUM_CPUS];
 static thread_fifo_t outgoing_fifos[NUM_CPUS];
-
-
-
-static void thread_exit()
-{
-    cpu_core_e core = curr_core();
-
-    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
-    g_cpus[core].curr_thread->thread_status = FINISHED;
-    switch_out(g_cpus[core].curr_thread);
-    unlock_mutex(&(g_cpus[core].thread_mutex));
-    for (;;) {};
-}
-
-
-
-
-//assumes thread mutex is already held here
-static inline void prime_thread(thread_t* thread)
-{
-    uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
-
-    //Return From Exception Full Descending (RFEFD) frame (bottom) as well as all the popping stuff etc
-    *(--sp) = MODE_SYS;                    // spsr_irq
-    *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
-
-    // r0-r12 (full integer file; the IRQ handler saves/restores all of them)
-    *(--sp) = 0; // r12
-    *(--sp) = 0; // r11
-    *(--sp) = 0; // r10
-    *(--sp) = 0; // r9
-    *(--sp) = 0; // r8
-    *(--sp) = 0; // r7
-    *(--sp) = 0; // r6
-    *(--sp) = 0; // r5
-    *(--sp) = 0; // r4
-    *(--sp) = 0; // r3
-    *(--sp) = 0; // r2
-    *(--sp) = 0; // r1
-    *(--sp) = 0; //(uint32_t)&thread->thread_status; // r0
-
-    uint32_t adjustment = ((uint32_t)sp) & 4;
-    sp = (uint32_t*)((uint32_t)sp - adjustment);
-
-    *(--sp) = (uint32_t)thread_exit; //lr
-    *(--sp) = adjustment; //store adjustment
-
-    thread->sp = (char*)sp;
-    thread->thread_status = RUNNING;
-}
-
-
 
 
 
@@ -251,6 +201,7 @@ sys_exit_e psched_clear_threads(void) //Function is currently deprecated
     lock_mutex_persistent(&(g_cpus[core].thread_mutex));
 
     destroy_threads(g_cpus[core].incoming_threads);
+    destroy_threads(g_cpus[core].outgoing_threads);
 
     lock_mutex_persistent(&g_allocator_mutex);
     while (g_cpus[core].deadHeap->curr_index > 0)
@@ -276,6 +227,243 @@ sys_exit_e psched_clear_threads(void) //Function is currently deprecated
 
 
 
+static void thread_exit();
+static inline bool next_up(cpu_core_e core);
+
+
+//assumes thread mutex is already held here
+static inline void prime_thread(thread_t* thread)
+{
+    uint32_t* sp = (uint32_t*)(((uintptr_t)(thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7);
+
+    //Return From Exception Full Descending (RFEFD) frame (bottom) as well as all the popping stuff etc
+    *(--sp) = MODE_SYS;                    // spsr_irq
+    *(--sp) = (uint32_t)thread->func;      // lr_irq → pc
+
+    // r0-r12 (full integer file; the IRQ handler saves/restores all of them)
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // r11
+    *(--sp) = 0; // r10
+    *(--sp) = 0; // r9
+    *(--sp) = 0; // r8
+    *(--sp) = 0; // r7
+    *(--sp) = 0; // r6
+    *(--sp) = 0; // r5
+    *(--sp) = 0; // r4
+    *(--sp) = 0; // r3
+    *(--sp) = 0; // r2
+    *(--sp) = 0; // r1
+    *(--sp) = 0; //(uint32_t)&thread->thread_status; // r0
+
+    uint32_t adjustment = ((uint32_t)sp) & 4;
+    sp = (uint32_t*)((uint32_t)sp - adjustment);
+
+    *(--sp) = (uint32_t)thread_exit; //lr
+    *(--sp) = adjustment; //store adjustment
+
+    thread->sp = (char*)sp;
+    thread->thread_status = RUNNING;
+}
+
+
+
+
+
+static void thread_exit()
+{
+    uint32_t svc_sp_entry;
+    __asm__ __volatile__("cpsid i\n"
+            "cps 0x13\n"
+            "mov %0, sp\n"
+            : "=r"(svc_sp_entry)
+            :
+            : "memory");
+
+    cpu_core_e core = curr_core();
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
+
+
+    g_cpus[core].curr_thread->thread_status = FINISHED;
+    switch_out(g_cpus[core].curr_thread);
+
+    if (!next_up(core)) //Either no valid tasks set or we ran the last one last cycle
+    {
+        g_cpus[core].curr_thread = g_cpus[core].main_thread;
+    }
+
+    switch (g_cpus[core].curr_thread->thread_status)
+    {
+        case PENDING:
+            prime_thread(g_cpus[core].curr_thread);
+            /* fall through */
+
+        case RUNNING:
+            __asm__ __volatile__ (
+                "cps 0x1f\n"
+                "mov sp, %0\n"
+                "cps 0x13\n"
+                :
+                : "r"(g_cpus[core].curr_thread->sp)
+            );
+
+            switch_in(g_cpus[core].curr_thread);
+            unlock_mutex(&(g_cpus[core].thread_mutex));
+
+            __asm__ __volatile__ (
+                "mov sp, %0\n"
+                "cps 0x1f\n"
+                "pop {r1, lr}\n"
+                "add sp, sp, r1\n"
+                "pop {r0-r12}\n"
+                "RFEFD sp!"
+                :
+                : "r"(svc_sp_entry)
+                : "memory"
+            );
+
+            break;
+
+        default:
+            break;
+    }
+
+    //Shouldn't get hit
+    for (;;) {};
+}
+
+
+
+
+
+
+//Assumes thread lock held before invocation
+static inline bool next_up(cpu_core_e core)
+{
+    thread_t* thread;
+
+    while(g_cpus[core].incoming_threads->size > 0)
+    {
+        thread = fifo_pop(g_cpus[core].incoming_threads);
+
+        thread->release_time = g_cpus[core].ticks;
+        thread->deadline = g_cpus[core].ticks + thread->period;
+        thread->dirty = false;
+        thread->thread_status = PENDING;
+
+        insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
+    }
+
+
+    bool thread_found = false;
+
+    while (g_cpus[core].relHeap->curr_index > 0 && geq_wrapped(g_cpus[core].ticks, g_cpus[core].relHeap->heap[0].thread->release_time))
+    {
+        pop_heap(g_cpus[core].relHeap, &thread);
+        thread->dirty = false;
+        thread->thread_status = PENDING;
+        insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
+    }
+
+
+    while(g_cpus[core].deadHeap->curr_index > 0)
+    {
+        thread = g_cpus[core].deadHeap->heap[0].thread;
+
+        if (g_cpus[core].curr_thread != g_cpus[core].main_thread)
+        {
+            char* asp  = g_cpus[core].curr_thread->sp;
+            char* base = g_cpus[core].curr_thread->stack;
+            if (asp < base || asp > base + THREAD_STACK_SIZE)
+            {
+                raise_error("next_up: active thread sp outside stack range");
+            }
+        }
+
+
+        if (thread->thread_status == FINISHED)
+        {
+            pop_heap(g_cpus[core].deadHeap, &thread);
+
+            if (thread->periodicity == PERIODIC)
+            {
+                do
+                {
+                    thread->deadline += thread->period;
+                }   while (thread->deadline <= g_cpus[core].ticks);
+
+                do
+                {
+                    thread->release_time += thread->period;
+                }   while (thread->release_time < thread->deadline - thread->period);
+
+                if (geq_wrapped(g_cpus[core].ticks, thread->release_time)) //Will nominally fire on equality
+                {
+                    thread->dirty = false;
+                    thread->thread_status = PENDING;
+                }
+
+                else //Add to release heap
+                {
+                    insert_node(g_cpus[core].relHeap, thread, thread->release_time);
+                }
+
+            }
+
+            else if (thread->periodicity == APERIODIC)
+            {
+                // kFree(thread);
+                fifo_push(g_cpus[core].outgoing_threads, thread);
+
+                continue;
+            }
+
+            else
+            {
+                raise_error("next_up: thread periodicity corrupted");
+            }
+
+        }
+
+        if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
+        {
+            if (geq_wrapped(g_cpus[core].ticks, thread->deadline) && !thread->dirty)
+            {
+                thread->dirty = true;
+                g_cpus[core].missed_deadlines++;
+            }
+
+            g_cpus[core].curr_thread = thread;
+            thread_found = true;
+            break;
+        }
+
+
+        else
+        {
+            raise_error_ctx("next_up: thread status corrupted", (uint32_t)(uintptr_t)thread);
+        }
+    }
+
+    if ((g_cpus[core].outgoing_threads->size > 0) && (lock_mutex_best_effort(&g_allocator_mutex) == LOCK_OK))
+    {
+        while (g_cpus[core].outgoing_threads->size > 0)
+        {
+            kFree(fifo_pop(g_cpus[core].outgoing_threads));
+        }
+
+        unlock_mutex(&g_allocator_mutex);
+    }
+
+    return thread_found;
+}
+
+
+
+
+
+
+
+
 
 inline void next_thread()
 {
@@ -297,6 +485,17 @@ inline void next_thread()
                 "cps #0x12\n"
                 : "=r"(g_cpus[core].curr_thread->sp)
             );
+
+
+            if (g_cpus[core].curr_thread != g_cpus[core].main_thread)
+            {
+                char* asp  = g_cpus[core].curr_thread->sp;
+                char* base = g_cpus[core].curr_thread->stack;
+                if (asp < base || asp > base + THREAD_STACK_SIZE)
+                {
+                    raise_error("next_thread: active thread sp outside stack range");
+                }
+            }
 
 
 #ifdef MODE_TEST
@@ -325,99 +524,14 @@ inline void next_thread()
             }
 #endif
 
-            thread_t* thread;
 
-            while(g_cpus[core].incoming_threads->size > 0)
-            {
-                thread = fifo_pop(g_cpus[core].incoming_threads);
-
-                thread->release_time = g_cpus[core].ticks;
-                thread->deadline = g_cpus[core].ticks + thread->period;
-                thread->dirty = false;
-                thread->thread_status = PENDING;
-
-                insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
-            }
-
-
-            bool thread_found = false;
-
-            while (g_cpus[core].relHeap->curr_index > 0 && geq_wrapped(g_cpus[core].ticks, g_cpus[core].relHeap->heap[0].thread->release_time))
-            {
-                pop_heap(g_cpus[core].relHeap, &thread);
-                thread->dirty = false;
-                thread->thread_status = PENDING;
-                insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
-            }
-
-
-            while(g_cpus[core].deadHeap->curr_index > 0)
-            {
-                thread = g_cpus[core].deadHeap->heap[0].thread;
-
-                if (thread->thread_status == FINISHED)
-                {
-                    pop_heap(g_cpus[core].deadHeap, &thread);
-
-                    if (thread->periodicity == PERIODIC)
-                    {
-                        do
-                        {
-                            thread->deadline += thread->period;
-                        }   while (thread->deadline <= g_cpus[core].ticks);
-
-                        do
-                        {
-                            thread->release_time += thread->period;
-                        }   while (thread->release_time < thread->deadline - thread->period);
-
-                        if (geq_wrapped(g_cpus[core].ticks, thread->release_time)) //Will nominally fire on equality
-                        {
-                            thread->dirty = false;
-                            thread->thread_status = PENDING;
-                        }
-
-                        else //Add to release heap
-                        {
-                            insert_node(g_cpus[core].relHeap, thread, thread->release_time);
-                        }
-
-                    }
-
-                    else
-                    {
-                        // kFree(thread);
-                        fifo_push(g_cpus[core].outgoing_threads, thread);
-
-                        continue;
-                    }
-
-                }
-
-                if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
-                {
-                    if (geq_wrapped(g_cpus[core].ticks, thread->deadline) && !thread->dirty)
-                    {
-                        thread->dirty = true;
-                        g_cpus[core].missed_deadlines++;
-                    }
-
-                    g_cpus[core].curr_thread = thread;
-                    thread_found = true;
-                    break;
-                }
-            }
-
-
-            if (!thread_found) //Either no valid tasks set or we ran the last one last cycle
+            if (!next_up(core)) //Either no valid tasks set or we ran the last one last cycle
             {
                 g_cpus[core].curr_thread = g_cpus[core].main_thread;
             }
 
 
             switch_in(g_cpus[core].curr_thread);
-
-
             KTRACE_TICK_EXIT(g_cpus[core].curr_thread);   /* test-only per-tick hook (Gantt + metrics mirror) */
 
             switch (g_cpus[core].curr_thread->thread_status)
@@ -439,23 +553,14 @@ inline void next_thread()
                 default:
                     break;
             }
-
-
-
-            if ((g_cpus[core].outgoing_threads->size > 0) && (lock_mutex_best_effort(&g_allocator_mutex) == LOCK_OK))
-            {
-                while (g_cpus[core].outgoing_threads->size > 0)
-                {
-                    kFree(fifo_pop(g_cpus[core].outgoing_threads));
-                }
-                unlock_mutex(&g_allocator_mutex);
-            }
         }
 
         
         else if (g_cpus[core].request_terminate && (lock_mutex_best_effort(&g_allocator_mutex) == LOCK_OK))
         {
             destroy_threads(g_cpus[core].incoming_threads);
+            destroy_threads(g_cpus[core].outgoing_threads);
+
 
             for (size_t i = 0; i < g_cpus[core].deadHeap->curr_index; i++)
             {
@@ -477,15 +582,18 @@ inline void next_thread()
             g_cpus[core].relHeap->curr_index = 0;
 
 
-            __asm__ __volatile__ (
-                "cps #0x1F\n"
-                "mov sp, %0\n"
-                "cps #0x12\n"
-                "dmb sy\n"
-                :
-                : "r"(g_cpus[core].main_thread->sp)
-                : "memory"
-            );
+            if (g_cpus[core].curr_thread != g_cpus[core].main_thread)
+            {
+                __asm__ __volatile__ (
+                    "cps #0x1F\n"
+                    "mov sp, %0\n"
+                    "cps #0x12\n"
+                    :
+                    : "r"(g_cpus[core].main_thread->sp)
+                    : "memory"
+                );
+            }
+            __asm__ __volatile__ ("dmb sy" ::: "memory");
             kFree(g_cpus[core].main_thread);
 
 
@@ -494,7 +602,6 @@ inline void next_thread()
 
             unlock_mutex(&g_allocator_mutex);
         }
-
 
         unlock_mutex(&(g_cpus[core].thread_mutex));
     }

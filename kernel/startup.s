@@ -371,7 +371,7 @@ _fiq_handler:
 
     pop {r1, lr} @; restore lr_sys
     add sp, sp, r1 @; unadjust stack
-    pop {r0-r3, r12} @; restore AAPCS regset
+    pop {r0-r12} @; restore AAPCS regset
 
     @; NOTE: no cpsie here — RFEFD restores CPSR (I/F bits) atomically with the PC.
     RFEFD sp! @; Set PC and CPSR

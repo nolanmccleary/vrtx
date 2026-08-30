@@ -56,6 +56,7 @@ EDF_METRIC_SIZE   = EDF_METRIC_STRUCT.size
 # g_fault[NUM_CPUS] fault_record_t : magic, vec, pc, spsr, dfsr, dfar, ifsr, ifar
 FAULT_STRUCT = struct.Struct("<8I")
 FAULT_MAGIC  = 0x464C5431   # "FLT1"
+FAULT_MSG_LEN = 128         # g_error_message[NUM_CPUS][FAULT_MSG_LEN] (must match fault.h)
 FAULT_VEC    = {1: "undef", 2: "swi", 3: "prefetch abort", 4: "data abort", 5: "fiq"}
 FAULT_FS     = {0b00001: "alignment", 0b00101: "translation (L1)", 0b00111: "translation (L2)",
                 0b01000: "sync external abort", 0b01001: "domain (L1)", 0b01011: "domain (L2)",
@@ -163,6 +164,8 @@ class OCD:
         self.sock = None
         self.owns_daemon = False
         self.fault_addr: int | None = None   # g_fault[], set by main() for crash decode
+        self.error_addr: int | None = None   # g_error_message[], set by main() for raise_error() strings
+        self.ctx_addr: int | None = None     # g_error_ctx[], raise_error_ctx() context value
         self.num_cpus: int = 1
 
         # Reuse a running daemon (openocd/ocd) rather than spawn+SIGKILL churn, which
@@ -173,8 +176,13 @@ class OCD:
             if attempt > 0:
                 subprocess.run(["pkill", "-9", "openocd"], stderr=subprocess.DEVNULL)
                 time.sleep(0.5)
+            # start_new_session: put openocd in its own session so a terminal Ctrl-C
+            # (SIGINT to the foreground process group) does NOT kill it -- Python still
+            # gets KeyboardInterrupt, but the daemon stays up so diagnose() can read
+            # both cores' PCs on interrupt instead of hitting a reset connection.
             self.proc = subprocess.Popen(["openocd", "-f", str(OPENOCD_CFG), "-c", "init"],
-                                         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         start_new_session=True)
             self.owns_daemon = True
             for _ in range(30):
                 if self.proc.poll() is not None:
@@ -276,6 +284,17 @@ class OCD:
         self.cmd("targets cv_hps.cpu")
         return ", ".join(out)
 
+    def read_error_message(self, core: int) -> str | None:
+        # g_error_message[core][FAULT_MSG_LEN], a C string written by raise_error().
+        if self.error_addr is None:
+            return None
+        try:
+            raw = self.read_bytes(self.error_addr + core * FAULT_MSG_LEN, FAULT_MSG_LEN)
+        except Exception:
+            return None
+        text = raw.split(b"\x00", 1)[0]
+        return text.decode("ascii", "replace") if text else None
+
     def read_fault(self) -> str | None:
         if self.fault_addr is None:
             return None
@@ -283,8 +302,26 @@ class OCD:
             words = self.read_words(self.fault_addr, 8 * self.num_cpus)
         except Exception:
             return None
-        reports = [r for core in range(self.num_cpus)
-                   if (r := fault_report(words[core * 8:core * 8 + 8], core))]
+        reports = []
+        for core in range(self.num_cpus):
+            r = fault_report(words[core * 8:core * 8 + 8], core)
+            if not r:
+                continue
+            msg = self.read_error_message(core)
+            if msg:
+                r += f"\n  raised      = {msg}"
+                if self.ctx_addr is not None:
+                    try:
+                        ctx = self.read_u32(self.ctx_addr + core * 4)
+                        if ctx:
+                            r += f"\n  ctx         = 0x{ctx:08x}"
+                            if 0x00200000 <= ctx < 0x01200000:   # heap thread_t: dump its field block
+                                fields = self.read_words(ctx + 0x2000, 16)   # ctx + THREAD_STACK_SIZE
+                                r += "\n  thread_t fields (ctx+0x2000):\n    " + \
+                                     " ".join(f"{w:08x}" for w in fields)
+                    except Exception:
+                        pass
+            reports.append(r)
         return "\n".join(reports) if reports else None
 
     def diagnose(self) -> str:
@@ -316,6 +353,22 @@ class OCD:
         # OpenOCD steps over the managed hw breakpoint, then we continue.
         self.step()
         self.resume()
+
+    def drain(self) -> None:
+        # Clear any bytes left in the socket from a command whose recv was cut short
+        # (e.g. Ctrl-C mid-cmd), so a following cmd() reads its own reply and not a
+        # stale one. Best-effort; used before diagnosing on interrupt.
+        if self.sock is None:
+            return
+        self.sock.setblocking(False)
+        try:
+            while self.sock.recv(4096):
+                pass
+        except (BlockingIOError, OSError):
+            pass
+        finally:
+            self.sock.setblocking(True)
+            self.sock.settimeout(45)
 
     def close(self) -> None:
         if self.sock is not None:
@@ -763,7 +816,8 @@ def main(bootable: bool = False) -> None:
         "g_edf_u_values", "g_edf_u_count", "g_edf_u_index", "g_edf_u_permille",
         "g_edf_periods", "g_edf_C", "g_edf_done", "g_sched_trace", "g_trace_len", "g_test_release",
         "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
-        "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault"))
+        "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault",
+        "g_error_message", "g_error_ctx"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
@@ -798,6 +852,8 @@ def main(bootable: bool = False) -> None:
         print(f"EDF periods: {list(periods)}\n")
 
         ocd.fault_addr = symbols["g_fault"]
+        ocd.error_addr = symbols["g_error_message"]
+        ocd.ctx_addr   = symbols["g_error_ctx"]
         ocd.num_cpus   = num_cpus
         ocd.add_hw_breakpoint(bp_edf_ready)
         ocd.add_hw_breakpoint(bp_edf_done)
@@ -806,8 +862,20 @@ def main(bootable: bool = False) -> None:
             ocd.write_u32(symbols["g_boot_release"], 1)
 
         # Control panel: comment a phase to skip it (also comment its call in main.c).
-        alloc_metrics, warmup = allocbench(ocd, symbols)
-        edf_results, traces, cpu1_traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
+        try:
+            alloc_metrics, warmup = allocbench(ocd, symbols)
+            edf_results, traces, cpu1_traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
+        except KeyboardInterrupt:
+            # Ctrl-C usually means the run hung -- dump where both cores are stuck
+            # (+ any fault record) before the socket closes. fault_addr/num_cpus are
+            # already set above, so diagnose() gives the full picture.
+            print("\n\n*** interrupted -- target state ***")
+            try:
+                ocd.drain()
+                print(ocd.diagnose())
+            except Exception as e:
+                print(f"(could not read target: {e})")
+            raise SystemExit(130)
 
     write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_traces, warmup)
     print(f"\nPASS   artifacts in {outdir}")
