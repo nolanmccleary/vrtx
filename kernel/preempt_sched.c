@@ -141,7 +141,10 @@ sys_exit_e psched_deinit(void)
 
 thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity)
 {
-    __asm__ __volatile__("cpsid i" ::: "memory");
+    uint32_t irq_state;
+    __asm__ __volatile__("mrs %0, cpsr\n\t"
+                         "cpsid i"
+                         : "=r"(irq_state) :: "memory");
 
 
     lock_mutex_persistent(&g_allocator_mutex);
@@ -161,7 +164,7 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
     fifo_push(g_cpus[core].incoming_threads, new_thread);
     unlock_mutex(&(g_cpus[core].thread_mutex));
 
-    __asm__ __volatile__("cpsie i" ::: "memory");
+    __asm__ __volatile__("msr cpsr_c, %0" :: "r"(irq_state) : "memory");
 
 
     return new_thread;
@@ -171,7 +174,10 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
 
 sys_exit_e kill_thread(thread_t* thread)
 {
-    __asm__ __volatile__("cpsid i" ::: "memory");
+    uint32_t irq_state;
+    __asm__ __volatile__("mrs %0, cpsr\n\t"
+                         "cpsid i"
+                         : "=r"(irq_state) :: "memory");
 
     lock_mutex_persistent(&(g_cpus[thread->core].thread_mutex));
 
@@ -185,7 +191,7 @@ sys_exit_e kill_thread(thread_t* thread)
     //     next_thread();
     // }
 
-    __asm__ __volatile__("cpsie i" ::: "memory");
+    __asm__ __volatile__("msr cpsr_c, %0" :: "r"(irq_state) : "memory");
 
     return SYS_OK;
 }

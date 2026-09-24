@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "cpu.h"
+#include "fault.h"
 #include "ktrace.h"
 #include "pmu.h"
 #include "preempt_sched.h"
@@ -76,6 +77,38 @@ HOST_SHARED uint32_t  g_overhead_m[NUM_CPUS];
 
 
 /* -------------------------------------------------------------------------
+ * Thread-corruption watchdog (test harness).
+ *
+ * The harness created every task, so it knows each field's ground truth. The
+ * per-tick hook re-validates the live tasks against that truth; the first
+ * mismatch captures a full report here (host-readable) and traps, so we see
+ * WHICH task, WHICH field, and expected-vs-actual the instant the struct rots
+ * -- before next_up's generic status/periodicity trap fires downstream.
+ * ------------------------------------------------------------------------- */
+static thread_t*         g_edf_handles[NUM_CPUS][NTASKS];  /* this trial's tasks, per core */
+static volatile uint32_t g_edf_armed;                      /* 1 while a trial's tasks are live */
+
+/* Premature-FINISH detector. A task's job is the ONLY legitimate way it finishes,
+ * so the job bumps g_task_completions right before returning. On entry it checks
+ * that the previous instance actually completed (completions advanced since the
+ * snapshot it took last entry); if not, the scheduler re-ran the task without it
+ * finishing -> a premature FINISH. Per (core, task); g_task_started gates the very
+ * first instance and is cleared per trial. */
+static volatile uint32_t g_task_completions[NUM_CPUS][NTASKS];
+static volatile uint32_t g_task_started[NUM_CPUS][NTASKS];
+static volatile uint32_t g_task_start_snap[NUM_CPUS][NTASKS];
+static volatile uint32_t g_task_trial[NUM_CPUS][NTASKS];   /* g_edf_u_index the tracking is for */
+
+HOST_SHARED volatile uint32_t g_edf_bad_thread;    /* offending thread_t*                  */
+HOST_SHARED volatile uint32_t g_edf_bad_core;      /* core whose watchdog tripped          */
+HOST_SHARED volatile uint32_t g_edf_bad_task;      /* task index 0..NTASKS-1               */
+HOST_SHARED volatile uint32_t g_edf_bad_expected;  /* value the harness set                */
+HOST_SHARED volatile uint32_t g_edf_bad_actual;    /* value found                          */
+HOST_SHARED volatile uint32_t g_edf_bad_tick;      /* tick at detection                    */
+
+
+
+/* -------------------------------------------------------------------------
  * Synthetic jobs
  * ------------------------------------------------------------------------- */
 
@@ -92,34 +125,42 @@ static void do_work(uint32_t iters)
 
 /* Both cores run these same jobs concurrently, but only CPU0's completions are
  * tracked, so guard g_edf_done -- otherwise CPU1's jobs double-count it. */
-static sys_exit_e job0(void)
+/* Shared task body. Self-polices premature FINISH: on entry, the previous
+ * instance must have bumped g_task_completions since this task last snapshotted
+ * it; if it didn't, the scheduler re-ran the task without it finishing. */
+static void job_body(uint32_t idx)
 {
-    do_work(iters[0]);
+    cpu_core_e core = curr_core();
 
-    if (curr_core() == CPU0) g_edf_done[0]++;
+    /* New trial? drop this task's tracking so its first instance doesn't get
+     * measured against the prior trial (whose last instance kill_thread cut short). */
+    if (g_task_trial[core][idx] != g_edf_u_index)
+    {
+        g_task_trial[core][idx]   = g_edf_u_index;
+        g_task_started[core][idx] = 0u;
+    }
 
-    return SYS_OK;
+    if (g_task_started[core][idx] &&
+        g_task_completions[core][idx] == g_task_start_snap[core][idx])
+    {
+        raise_error_ctx("edf watchdog: task re-run without completing prior instance (premature FINISH)",
+                        (uint32_t)(uintptr_t)g_edf_handles[core][idx]);
+    }
+
+    g_task_started[core][idx]    = 1u;
+    g_task_start_snap[core][idx] = g_task_completions[core][idx];
+
+    do_work(iters[idx]);
+
+    if (core == CPU0) g_edf_done[idx]++;
+
+    g_task_completions[core][idx]++;   /* the one legitimate finish signal */
 }
 
 
-static sys_exit_e job1(void)
-{
-    do_work(iters[1]);
-
-    if (curr_core() == CPU0) g_edf_done[1]++;
-
-    return SYS_OK;
-}
-
-
-static sys_exit_e job2(void)
-{
-    do_work(iters[2]);
-
-    if (curr_core() == CPU0) g_edf_done[2]++;
-
-    return SYS_OK;
-}
+static sys_exit_e job0(void) { job_body(0u); return SYS_OK; }
+static sys_exit_e job1(void) { job_body(1u); return SYS_OK; }
+static sys_exit_e job2(void) { job_body(2u); return SYS_OK; }
 
 
 static sys_exit_e (*const JOBS[NTASKS])(void) =
@@ -146,6 +187,57 @@ static int trace_idx(thread_t* r)
 
 /* Per-tick hook (invoked from the scheduler via KTRACE_TICK_EXIT). Records the
  * running task id for the traced trial only; a no-op otherwise. */
+/* Record the corruption for the host, then trap. raise_error() does not return. */
+static void edf_flag_corruption(const char* msg, thread_t* t, cpu_core_e core,
+                                uint32_t idx, uint32_t expected, uint32_t actual)
+{
+    g_edf_bad_thread   = (uint32_t)(uintptr_t)t;
+    g_edf_bad_core     = (uint32_t)core;
+    g_edf_bad_task     = idx;
+    g_edf_bad_expected = expected;
+    g_edf_bad_actual   = actual;
+    g_edf_bad_tick     = g_cpus[core].ticks;
+
+    __asm__ volatile("dmb sy" ::: "memory");
+    raise_error_ctx(msg, (uint32_t)(uintptr_t)t);
+}
+
+
+/* Validate one live task against the values add_thread_to_core() stamped. Fields
+ * period/func/periodicity/core are set once and never change; thread_status must
+ * stay a valid enum; sp must live inside the task's own stack. Any deviation ==
+ * the struct got clobbered (freed + reused, stray write, etc.). */
+static void edf_check_task(cpu_core_e core, uint32_t idx)
+{
+    thread_t* t = g_edf_handles[core][idx];
+    if (t == NULL) return;
+
+    if (t->periodicity != PERIODIC)
+        edf_flag_corruption("edf watchdog: task periodicity corrupted",
+                            t, core, idx, (uint32_t)PERIODIC, (uint32_t)t->periodicity);
+
+    if (t->period != g_edf_periods[idx])
+        edf_flag_corruption("edf watchdog: task period corrupted",
+                            t, core, idx, g_edf_periods[idx], t->period);
+
+    if (t->func != JOBS[idx])
+        edf_flag_corruption("edf watchdog: task func corrupted",
+                            t, core, idx, (uint32_t)(uintptr_t)JOBS[idx], (uint32_t)(uintptr_t)t->func);
+
+    if (t->core != core)
+        edf_flag_corruption("edf watchdog: task core corrupted",
+                            t, core, idx, (uint32_t)core, (uint32_t)t->core);
+
+    if (t->thread_status != PENDING && t->thread_status != RUNNING && t->thread_status != FINISHED)
+        edf_flag_corruption("edf watchdog: task status corrupted",
+                            t, core, idx, 0u, (uint32_t)t->thread_status);
+
+    if ((char*)t->sp < t->stack || (char*)t->sp > t->stack + THREAD_STACK_SIZE)
+        edf_flag_corruption("edf watchdog: task sp outside its stack",
+                            t, core, idx, (uint32_t)(uintptr_t)t->stack, (uint32_t)(uintptr_t)t->sp);
+}
+
+
 void ktrace_edf_tick(thread_t* running)
 {
     if (!trace_active) return;
@@ -166,6 +258,15 @@ void ktrace_edf_tick(thread_t* running)
     g_ticks_m[core]    = g_cpus[core].ticks;
     g_misses_m[core]   = g_cpus[core].missed_deadlines;
     g_overhead_m[core] = g_cpus[core].avg_overhead;
+
+    /* Watchdog: re-check every live task on this core against ground truth. */
+    if (g_edf_armed)
+    {
+        for (uint32_t i = 0; i < NTASKS; i++)
+        {
+            edf_check_task(core, i);
+        }
+    }
 }
 
 
@@ -284,6 +385,7 @@ void edf_run(void)
      * allocbench destroyed its heap before returning.
      */
     heap_init();
+    psched_init();
 
     for (uint32_t c = 0; c < NUM_CPUS; c++)
     {
@@ -298,26 +400,12 @@ void edf_run(void)
     }
 
 
-    uint32_t cycles_per_tick = 0u;
-    uint32_t cycles_per_iter = 0u;
+    uint32_t cycles_per_tick = measure_cycles_per_tick();
+    uint32_t cycles_per_iter = measure_cycles_per_iter();
 
 
     for (uint32_t trial = 0; trial < g_edf_u_count; trial++)
     {
-        /*
-         * Bring the scheduler up fresh for this trial (both cores). psched_deinit()
-         * at the trial's end tears it all back down -- fresh heaps + main_thread,
-         * no cross-trial carryover, and it replaces the per-task kill loop.
-         */
-        psched_init();
-
-        if (trial == 0)   // calibrate once; needs the scheduler ticking for rd_ticks()
-        {
-            cycles_per_tick = measure_cycles_per_tick();
-            cycles_per_iter = measure_cycles_per_iter();
-        }
-
-
         /*
          * Trial construction must not race the scheduler.
          */
@@ -343,16 +431,18 @@ void edf_run(void)
 
 
         g_test_release = 0u;
+        g_edf_armed    = 0u;   /* don't validate a half-built task set */
 
         /* Both cores run the same workload concurrently. The allocator mutex makes
          * the shared heap safe, and each core's thread_mutex makes the cross-core
          * push into CPU1's incoming FIFO safe against CPU1's own scheduler. */
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
-            add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
+            g_edf_handles[CPU0][i] = add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
+            g_edf_handles[CPU1][i] = add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
         }
 
+        g_edf_armed = 1u;   /* task set complete -- watchdog live from here */
 
         __asm__ __volatile__(
             "dmb sy"
@@ -393,12 +483,38 @@ void edf_run(void)
 
 
         /*
-         * Tear the whole scheduler down (both cores) before the next trial --
-         * frees every task + main_thread; replaces the per-task kill loop.
+         * Remove this trial before constructing the next one.
          */
-        psched_deinit();
+        __asm__ __volatile__(
+            "cpsid i"
+            :
+            :
+            : "memory"
+        );
+
+
+        g_edf_armed = 0u;   /* tearing the trial down -- stop validating (kill flips fields) */
+
+        // psched_clear_threads();
+        for (uint32_t i = 0; i < NTASKS; i++)
+        {
+            kill_thread(g_edf_handles[CPU0][i]);
+            kill_thread(g_edf_handles[CPU1][i]);
+        }
+
+
+        __asm__ __volatile__(
+            "cpsie i"
+            :
+            :
+            : "memory"
+        );
     }
 
+
+    /* Sweep complete on both cores -- tear the scheduler back down (CPU0 locally +
+     * IPI to CPU1), mirroring the psched_init() at the top. */
+    psched_deinit();
 
     KTRACE_EDF_DONE();
 

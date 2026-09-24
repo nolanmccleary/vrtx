@@ -166,6 +166,7 @@ class OCD:
         self.fault_addr: int | None = None   # g_fault[], set by main() for crash decode
         self.error_addr: int | None = None   # g_error_message[], set by main() for raise_error() strings
         self.ctx_addr: int | None = None     # g_error_ctx[], raise_error_ctx() context value
+        self.edf_bad_addr: int | None = None # g_edf_bad_thread[..], harness watchdog report block
         self.num_cpus: int = 1
 
         # Reuse a running daemon (openocd/ocd) rather than spawn+SIGKILL churn, which
@@ -322,6 +323,23 @@ class OCD:
                     except Exception:
                         pass
             reports.append(r)
+
+        # Harness watchdog detail (edf_flag_corruption): task#/core/expected/actual/tick.
+        if self.edf_bad_addr is not None:
+            try:
+                b = self.read_words(self.edf_bad_addr, 6)   # thread, core, task, expected, actual, tick
+                if b[0]:
+                    reports.append(
+                        f"*** EDF WATCHDOG ***\n"
+                        f"  thread      = 0x{b[0]:08x}\n"
+                        f"  core        = CPU{b[1]}\n"
+                        f"  task index  = {b[2]}\n"
+                        f"  expected    = 0x{b[3]:08x} ({b[3]})\n"
+                        f"  actual      = 0x{b[4]:08x} ({b[4]})\n"
+                        f"  at tick     = {b[5]}")
+            except Exception:
+                pass
+
         return "\n".join(reports) if reports else None
 
     def diagnose(self) -> str:
@@ -817,7 +835,7 @@ def main(bootable: bool = False) -> None:
         "g_edf_periods", "g_edf_C", "g_edf_done", "g_sched_trace", "g_trace_len", "g_test_release",
         "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
         "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault",
-        "g_error_message", "g_error_ctx"))
+        "g_error_message", "g_error_ctx", "g_edf_bad_thread"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
@@ -854,6 +872,7 @@ def main(bootable: bool = False) -> None:
         ocd.fault_addr = symbols["g_fault"]
         ocd.error_addr = symbols["g_error_message"]
         ocd.ctx_addr   = symbols["g_error_ctx"]
+        ocd.edf_bad_addr = symbols["g_edf_bad_thread"]
         ocd.num_cpus   = num_cpus
         ocd.add_hw_breakpoint(bp_edf_ready)
         ocd.add_hw_breakpoint(bp_edf_done)
