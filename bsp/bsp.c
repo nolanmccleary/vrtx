@@ -165,6 +165,21 @@ static void build_tables(void)
 #if ENABLE_MMU
     volatile uint32_t *l1_table = _l1_table_base;
 
+#if BOARD == BOARD_QEMU
+    /* Flat identity map. QEMU has one DRAM window (_ocram_origin = 0x60000000, size
+       _sdram_length): map it Normal cacheable + shareable so ACTLR.SMP / SCU snoop
+       is consistent, every other 1MB block (GIC/timer/peripherals) Device. No OCRAM
+       delegation -- QEMU has no separate OCRAM, and TCG RAM is coherent regardless. */
+    uint32_t ram_first = (uint32_t)(uintptr_t)_ocram_origin >> L1_BLOCK_ADDR_SHIFT;
+    uint32_t ram_last  = ram_first + ((uint32_t)(uintptr_t)_sdram_length >> L1_BLOCK_ADDR_SHIFT);
+    for (uint32_t b = 0; b < L1_BLOCK_COUNT; b++)
+    {
+        uint32_t base  = b << L1_BLOCK_ADDR_SHIFT;
+        uint32_t entry = (b >= ram_first && b < ram_last) ? L1_ENTRY_MAP_BLOCK_CACHEABLE
+                                                          : L1_ENTRY_MAP_BLOCK_DEVICE;
+        l1_table[b] = base | entry;
+    }
+#else
     uint32_t sdram_block_count = (uint32_t)(uintptr_t)_sdram_length / L1_BLOCK_SIZE_BYTES;
 
     /* The bulk telemetry block lives in SDRAM but must be Device (JTAG-coherent),
@@ -229,7 +244,8 @@ static void build_tables(void)
 
     l1_table[delegated_block] = (uint32_t)(uintptr_t)_l2_table_base | L1_ENTRY_POINT_TO_L2;
 #endif
-#endif
+#endif  /* BOARD == BOARD_QEMU / else */
+#endif  /* ENABLE_MMU */
 
     (void)(0);
 }

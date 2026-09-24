@@ -2,6 +2,7 @@
 #define BOOT_H
 
 #include <stdint.h>
+#include "board.h"
 
 /* Clock Manager: 0xFFD04000 */
 #define CM_BASE                 0xFFD04000U
@@ -178,7 +179,7 @@
  * D-caches coherent; invalidate its tag RAM then enable it before caches/coherency come
  * on. Bit 0 = 1 ENABLES (confirmed against Linux smp_scu.c; the ARM TRM had a doc-
  * revision ambiguity about this bit). PERIPHBASE checks out: SCU+0x1000 = GICD (0xFFFED000). */
-#define SCU_BASE                0xFFFEC000U
+#define SCU_BASE                BOARD_PERIPHBASE   /* SCU sits at PERIPHBASE+0 (DE1 0xFFFEC000, QEMU 0x1E000000) */
 #define SCU_CTRL                (*(volatile uint32_t *)(SCU_BASE + 0x00U))
 #define SCU_INVALIDATE_ALL      (*(volatile uint32_t *)(SCU_BASE + 0x0CU))
 #define SCU_CTRL_ENABLE         (1U << 0)

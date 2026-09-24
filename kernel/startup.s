@@ -14,9 +14,9 @@
 .equ F_BIT, 0x40   @ FIQ disable/mask bit, CPSR[6]
 
 @; CYCLONE V MAPPINGS
-.equ GICC_BASE,  0xFFFEC100
-.equ GICC_IAR,   0xFFFEC10C    @; GICC_BASE + 0x00C
-.equ GICC_EOIR,  0xFFFEC110    @; GICC_BASE + 0x010
+.equ GICC_BASE,  BOARD_GICC_BASE    @; board-selected (Makefile --defsym): DE1 0xFFFEC100, QEMU 0x1E000100
+.equ GICC_IAR,   GICC_BASE + 0x0C
+.equ GICC_EOIR,  GICC_BASE + 0x10
 
 @; Reset Manager MPU module reset (must match RSTMGR_MPUMODRST / _CPU1 in bsp/boot.h).
 @; Bit 0 = core 0 (THIS core) -- only ever RMW bit 1; never blanket-write this register.
@@ -194,8 +194,11 @@ host_ocram_zero:
     strlt r2, [r0], #4
     blt host_ocram_zero
 
-@; SET CPU1 VBAR, CLEAR MAILBOX AND READY, RELEASE CPU1
+@; RELEASE CPU1 -> it re-enters _reset_handler and forks on MPIDR
 .if ENABLE_SMP != 0
+ .if BOARD_IS_QEMU != 0
+    nop
+ .else
     ldr r0, =SYSMGR_ROMCODE_CPU1STARTADDR
     ldr r1, =_reset_handler
     str r1, [r0]                        @; cpu1startaddr = &_reset_handler (CPU1 re-enters, forks on MPIDR)
@@ -204,6 +207,7 @@ host_ocram_zero:
     ldr r1, [r0]
     bic r1, r1, #RSTMGR_MPUMODRST_CPU1  @; deassert CPU1 reset -> CPU1 boots ROM -> _cpu1_spin
     str r1, [r0]
+ .endif
 .endif
 
 .if BOOT_TEST != 0

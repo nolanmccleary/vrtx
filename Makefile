@@ -5,7 +5,25 @@ OBJCOPY := $(CROSS)-objcopy
 OBJDUMP := $(CROSS)-objdump
 NM      := $(CROSS)-nm
 
-BOARD ?= de1-soc
+# Board selection: cyclone_v (DE1-SoC, real HW) | qemu (vexpress-a9, emulated).
+# MODE_TEST is orthogonal -- any board builds with or without the test payload.
+BOARD ?= cyclone_v
+
+ifeq ($(BOARD),cyclone_v)
+  BOARD_ID        := BOARD_CYCLONE_V
+  LDSCRIPT        := linker/de1-soc.ld
+  BOARD_CDEFS     := -DBOARD_DE1_SOC
+  BOARD_GICC_BASE := 0xFFFEC100
+  BOARD_IS_QEMU   := 0
+else ifeq ($(BOARD),qemu)
+  BOARD_ID        := BOARD_QEMU
+  LDSCRIPT        := linker/qemu.ld
+  BOARD_CDEFS     :=
+  BOARD_GICC_BASE := 0x1E000100
+  BOARD_IS_QEMU   := 1
+else
+  $(error unknown BOARD '$(BOARD)' (expected cyclone_v or qemu))
+endif
 
 
 
@@ -71,7 +89,8 @@ CFLAGS := \
 	-Ibsp \
 	-Ikernel \
 	-Ibench \
-	-DBOARD_DE1_SOC \
+	$(BOARD_CDEFS) \
+	-DBOARD=$(BOARD_ID) \
 	-DMODE_TEST \
 	-DENABLE_MMU=$(ENABLE_MMU) \
 	-DENABLE_DCACHE=$(ENABLE_DCACHE) \
@@ -82,11 +101,13 @@ CFLAGS := \
 	-DBOOT_TEST=$(BOOT_TEST) \
 	-Wa,--defsym,ENABLE_SMP=$(ENABLE_SMP) \
 	-Wa,--defsym,BOOT_TEST=$(BOOT_TEST) \
-	-Wa,--defsym,MODE_TEST=1
+	-Wa,--defsym,MODE_TEST=1 \
+	-Wa,--defsym,BOARD_GICC_BASE=$(BOARD_GICC_BASE) \
+	-Wa,--defsym,BOARD_IS_QEMU=$(BOARD_IS_QEMU)
 
 
 LDFLAGS := \
-	-T linker/$(BOARD).ld \
+	-T $(LDSCRIPT) \
 	-Wl,--build-id=none \
 	-Wl,-Map=build/test.map \
 	-Wl,--defsym=_cfg_enable_mmu=$(ENABLE_MMU) \
@@ -107,7 +128,7 @@ build:
 	mkdir -p build
 
 
-build/test.elf: $(CORE) linker/$(BOARD).ld | build
+build/test.elf: $(CORE) $(LDSCRIPT) | build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(CORE) $(LIBGCC)
 	$(OBJDUMP) -d $@ > build/test.dis
 
@@ -191,7 +212,7 @@ clean:
 LINT_WARN := -Wall -Wextra -Wshadow -Wundef -Wpointer-arith
 LINT_SRC  := $(filter-out bsp/sequencer.c,$(filter %.c,$(CORE)))
 
-LINT_DEFS := -DBOARD_DE1_SOC -DMODE_TEST -DENABLE_MMU=$(ENABLE_MMU) \
+LINT_DEFS := $(BOARD_CDEFS) -DBOARD=$(BOARD_ID) -DMODE_TEST -DENABLE_MMU=$(ENABLE_MMU) \
 	-DENABLE_DCACHE=$(ENABLE_DCACHE) -DENABLE_ICACHE=$(ENABLE_ICACHE) \
 	-DENABLE_L2=$(ENABLE_L2) -DENABLE_SMP=$(ENABLE_SMP) -DBOOT_TEST=$(BOOT_TEST)
 
