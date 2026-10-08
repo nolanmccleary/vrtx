@@ -51,6 +51,9 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].relHeap = &heap2[core];
     g_cpus[core].relHeap->curr_index = 0;
 
+    g_cpus[core].last = 0;
+    g_cpus[core].utilization = 0;
+
 
     g_cpus[core].incoming_threads = &incoming_fifos[core];
     g_cpus[core].outgoing_threads = &outgoing_fifos[core];
@@ -64,6 +67,7 @@ sys_exit_e psched_core_init(void)
 
     g_cpus[core].main_thread->thread_status = RUNNING;
     g_cpus[core].main_thread->sp = sp;
+    g_cpus[core].main_thread->core = core;
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
     g_cpus[core].sched_init = true;
     g_cpus[core].request_terminate = false;
@@ -157,10 +161,11 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
 
-    init_metrics(new_thread);
     new_thread->core = core;
+    init_metrics(new_thread);
 
     lock_mutex_persistent(&(g_cpus[core].thread_mutex));
+    add_thread_to_upool(new_thread);
     fifo_push(g_cpus[core].incoming_threads, new_thread);
     unlock_mutex(&(g_cpus[core].thread_mutex));
 
@@ -424,7 +429,6 @@ static inline bool next_up(cpu_core_e core)
             {
                 // kFree(thread);
                 fifo_push(g_cpus[core].outgoing_threads, thread);
-
                 continue;
             }
 
@@ -459,7 +463,9 @@ static inline bool next_up(cpu_core_e core)
     {
         while (g_cpus[core].outgoing_threads->size > 0)
         {
-            kFree(fifo_pop(g_cpus[core].outgoing_threads));
+            thread_t* thread = fifo_pop(g_cpus[core].outgoing_threads);
+            remove_thread_from_upool(thread);
+            kFree(thread);
         }
 
         unlock_mutex(&g_allocator_mutex);
@@ -486,7 +492,9 @@ inline void next_thread()
         if (g_cpus[core].sched_init && !g_cpus[core].request_terminate)
         {
 
-            if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
+            // if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
+            switch_out(g_cpus[core].curr_thread);
+            update_upool(g_cpus[core].curr_thread);
 
             g_cpus[core].ticks++;
 
@@ -618,5 +626,5 @@ inline void next_thread()
     }
 
     overhead = pmu_cycles() - overhead;
-    update_cpu_metrics(core, overhead);
+    update_cpu_scheduler_overhead(core, overhead);
 }

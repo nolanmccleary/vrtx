@@ -74,6 +74,8 @@ typedef struct __attribute__((aligned(8))) //Stack should start 8-aligned
 
     metrics_t metrics;
 
+    uint32_t id;
+
     cpu_core_e core;
 }   thread_t;
 

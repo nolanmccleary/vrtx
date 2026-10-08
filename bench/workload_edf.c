@@ -73,6 +73,7 @@ HOST_SHARED metrics_t g_edf_metrics[NTASKS];   /* <- running->metrics (cached th
 HOST_SHARED uint32_t  g_ticks_m[NUM_CPUS];
 HOST_SHARED uint32_t  g_misses_m[NUM_CPUS];
 HOST_SHARED uint32_t  g_overhead_m[NUM_CPUS];
+HOST_SHARED uint32_t  g_core_u_m[NUM_CPUS];   /* per-core utilization, fixed-point /65536 */
 
 
 
@@ -257,7 +258,8 @@ void ktrace_edf_tick(thread_t* running)
 
     g_ticks_m[core]    = g_cpus[core].ticks;
     g_misses_m[core]   = g_cpus[core].missed_deadlines;
-    g_overhead_m[core] = g_cpus[core].avg_overhead;
+    g_overhead_m[core] = g_cpus[core].avg_scheduler_overhead;
+    g_core_u_m[core]   = g_cpus[core].utilization;
 
     /* Watchdog: re-check every live task on this core against ground truth. */
     if (g_edf_armed)
@@ -361,7 +363,7 @@ static void reset_trial(void)
     for (uint32_t c = 0; c < NUM_CPUS; c++)
     {
         g_trace_len[c]         = 0u;
-        g_cpus[c].avg_overhead = 0u;   /* fresh per-CPU scheduler-overhead EWMA per trial */
+        g_cpus[c].avg_scheduler_overhead = 0u;   /* fresh per-CPU scheduler-overhead EWMA per trial */
     }
 
 
@@ -392,6 +394,7 @@ void edf_run(void)
         g_ticks_m[c]    = 0u;
         g_misses_m[c]   = 0u;
         g_overhead_m[c] = 0u;
+        g_core_u_m[c]   = 0u;
     }
 
     for (uint32_t i = 0; i < NTASKS; i++)

@@ -108,6 +108,7 @@ class EDFResult:
     ti_av: tuple[int, ...]
     ci: tuple[int, ...]
     sched_overhead: tuple[int, ...]   # per-CPU EWMA scheduler cost, cycles
+    core_u: tuple[float, ...]         # per-CPU empirical utilization (g_core_u_m / 65536)
 
     @property
     def requested_u(self) -> float:
@@ -124,7 +125,7 @@ class EDFResult:
 
     @property
     def measured_u(self) -> float:
-        return sum(self.measured_u_per_task)
+        return self.core_u[0] if self.core_u else 0.0
 
 
 # --- ELF --------------------------------------------------------------------
@@ -459,6 +460,7 @@ def collect_edf_trial(ocd: OCD, symbols: dict[str, int], periods: tuple[int, ...
         ci_av=tuple(m[1] for m in mets),
         ti_av=tuple(m[5] for m in mets),
         sched_overhead=tuple(ocd.read_words(symbols["g_overhead_m"], num_cpus)),
+        core_u=tuple(v / 65536.0 for v in ocd.read_words(symbols["g_core_u_m"], num_cpus)),
     )
 
 
@@ -471,13 +473,13 @@ def print_alloc(metrics: Sequence[Metric]) -> None:
 
 def print_edf_header() -> None:
     print(f"\n{'reqU':>6} {'cfgU':>6} {'measU':>6} {'ticks':>8} {'miss':>8} "
-          f"{'sched c/c':>10}   per-task measured U (ci_av/ti_av)")
+          f"{'sched c/c':>10}   per-core U")
 
 
 def print_edf_result(r: EDFResult) -> None:
-    per_task = "  ".join(f"t{i}={u:.3f}" for i, u in enumerate(r.measured_u_per_task))
+    per_core = "  ".join(f"c{i}={u:.3f}" for i, u in enumerate(r.core_u))
     print(f"{r.requested_u:>6.3f} {r.configured_u:>6.3f} {r.measured_u:>6.3f} {r.ticks:>8} "
-          f"{r.misses:>8} {'/'.join(map(str, r.sched_overhead)):>10}   {per_task}")
+          f"{r.misses:>8} {'/'.join(map(str, r.sched_overhead)):>10}   {per_core}")
 
 
 # --- CSV --------------------------------------------------------------------
@@ -830,7 +832,7 @@ def main(bootable: bool = False) -> None:
     symbols  = elf_symbols(TEST_ELF)
     num_cpus = 2 if symbols.get("_cfg_enable_smp") else 1
     require_symbols(symbols, (
-        "_reset_handler", "g_metrics", "g_edf_metrics", "g_ticks_m", "g_misses_m", "g_overhead_m",
+        "_reset_handler", "g_metrics", "g_edf_metrics", "g_ticks_m", "g_misses_m", "g_overhead_m", "g_core_u_m",
         "g_edf_u_values", "g_edf_u_count", "g_edf_u_index", "g_edf_u_permille",
         "g_edf_periods", "g_edf_C", "g_edf_done", "g_sched_trace", "g_trace_len", "g_test_release",
         "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
