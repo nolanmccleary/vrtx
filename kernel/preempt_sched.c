@@ -297,6 +297,8 @@ static void thread_exit()
         g_cpus[core].curr_thread = g_cpus[core].main_thread;
     }
 
+    switch_in(g_cpus[core].curr_thread);
+
     switch (g_cpus[core].curr_thread->thread_status)
     {
         case PENDING:
@@ -312,7 +314,6 @@ static void thread_exit()
                 : "r"(g_cpus[core].curr_thread->sp)
             );
 
-            switch_in(g_cpus[core].curr_thread);
             unlock_mutex(&(g_cpus[core].thread_mutex));
 
             __asm__ __volatile__ (
@@ -392,6 +393,8 @@ static inline bool next_up(cpu_core_e core)
 
             if (thread->periodicity == PERIODIC)
             {
+                if (thread->period == 0) raise_error("next_up: thread period corrupted");
+
                 do
                 {
                     thread->deadline += thread->period;
@@ -406,6 +409,7 @@ static inline bool next_up(cpu_core_e core)
                 {
                     thread->dirty = false;
                     thread->thread_status = PENDING;
+                    insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
                 }
 
                 else //Add to release heap
@@ -413,6 +417,7 @@ static inline bool next_up(cpu_core_e core)
                     insert_node(g_cpus[core].relHeap, thread, thread->release_time);
                 }
 
+                continue;
             }
 
             else if (thread->periodicity == APERIODIC)

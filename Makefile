@@ -124,81 +124,37 @@ LIBGCC := $(shell $(CC) -mcpu=cortex-a9 -marm -print-libgcc-file-name)
 # Build
 # ---------------------------------------------------------------------------
 
-build:
+build/test.elf: $(CORE) $(LDSCRIPT)
 	mkdir -p build
-
-
-build/test.elf: $(CORE) $(LDSCRIPT) | build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(CORE) $(LIBGCC)
 	$(OBJDUMP) -d $@ > build/test.dis
 
 
 # ---------------------------------------------------------------------------
-# Flash
-# ---------------------------------------------------------------------------
-
-IMG ?= test
-
-flash: build/$(IMG).elf
-	@ENTRY=0x$$($(NM) $< | awk '$$3=="_reset_handler"{print $$1}'); \
-	pkill -9 openocd 2>/dev/null || true; \
-	sleep 0.5; \
-	openocd \
-		-f openocd/de1soc.cfg \
-		-c "init" \
-		-c "halt" \
-		-c "load_image $<" \
-		-c "reg cpsr 0x1d3" \
-		-c "reg pc $$ENTRY" \
-		-c "resume" \
-		-c "shutdown"
-
-
-# ---------------------------------------------------------------------------
-# Test
+# Test: build + drive the harness over JTAG (test.py loads the image + runs it)
 # ---------------------------------------------------------------------------
 
 test: build/test.elf
 	python3 test.py
 
 
-all: build/test.elf
-
-
 # ---------------------------------------------------------------------------
-# Self-boot build + flash: the ONE image + the BOOT_TEST gate, wrapped for SD
-# boot and written to the microSD's 0xA2 partition (scripts/flash_sd.sh locates
-# the card safely and writes only that slice -- no reformat). Then power-cycle
-# and drive with `python test.py --bootable`.
-#
-# Force-rebuilds test.elf because only a -D flag changes (make can't see that in
-# the timestamps). After running this, `make clean` before a normal `make test`
-# so the gate isn't left compiled in. `make boot FLASH_DRYRUN=1` detects the card
-# and stops before writing.
+# Self-boot: the ONE image + the BOOT_TEST gate, wrapped as a preloader and
+# written to the microSD's 0xA2 partition (scripts/flash_sd.sh locates the card
+# safely and writes only that slice -- no reformat). Power-cycle, then drive with
+# `python test.py --bootable`. Force-rebuilds test.elf (only a -D flag changes,
+# which make can't see in timestamps); `make clean` afterwards before a normal
+# `make test` so the gate isn't left compiled in. `make boot FLASH_DRYRUN=1`
+# detects the card and stops before writing.
 # ---------------------------------------------------------------------------
 
 boot:
 	rm -f build/test.elf
-	$(MAKE) BOOT_TEST=1 build/test.elf preloader
-	FLASH_DRYRUN=$(FLASH_DRYRUN) bash scripts/flash_sd.sh build/preloader.img
-
-
-# ---------------------------------------------------------------------------
-# Self-boot preloader image  (experimental)
-#
-# NOT a separate build: the ONE test.elf is already boot-ROM-shaped (vectors at
-# the OCRAM base + a 0x40 mkpimage-header hole -- see linker/de1-soc.ld and the
-# ".text" split in kernel/startup.s). 
-# ---------------------------------------------------------------------------
-
-preloader: build/test.elf
-	$(OBJCOPY) -O binary $< build/preloader.bin
-
+	$(MAKE) BOOT_TEST=1 build/test.elf
+	$(OBJCOPY) -O binary build/test.elf build/preloader.bin
 	@echo "preloader.bin: $$(wc -c < build/preloader.bin) bytes (must fit the boot ROM OCRAM budget)"
-	mkimage -T socfpgaimage -d build/preloader.bin build/preloader.img && echo "wrote build/preloader.img (mkimage -T socfpgaimage)"; \
-
-	@echo "then (DE1-SoC boots SD only) flash to the raw 0xA2 partition:"
-	@echo "   sudo dd if=build/preloader.img of=/dev/<sd-A2-partition> bs=64k conv=fsync"
+	mkimage -T socfpgaimage -d build/preloader.bin build/preloader.img && echo "wrote build/preloader.img"
+	FLASH_DRYRUN=$(FLASH_DRYRUN) bash scripts/flash_sd.sh build/preloader.img
 
 
 clean:
@@ -228,10 +184,5 @@ lint:
 	-@$(CPPCHECK) $(LINT_SRC)
 	@echo "=== lint done ==="
 
-# Deeper: GCC's static analyzer (use-after-free, double-free, leaks, null derefs).
-# Slower; run when chasing a memory bug.
-lint-analyze:
-	@$(CC) $(CFLAGS) $(LINT_WARN) -fanalyzer -fsyntax-only $(LINT_SRC)
 
-
-.PHONY: build clean flash test preloader boot lint lint-analyze
+.PHONY: test boot clean lint

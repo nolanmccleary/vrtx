@@ -24,7 +24,7 @@ void switch_in(thread_t *thread)
             uint32_t ti_curr = curr_cycles - thread->metrics.t0;
 
             thread->metrics.ti = ti_curr;
-            thread->metrics.ti_av = ti_curr - (ti_curr >> ALPHA) + (ti_av >> ALPHA);
+            thread->metrics.ti_av = ti_av - (ti_av >> ALPHA) + (ti_curr >> ALPHA);
             thread->metrics.t0 = curr_cycles;
 
             thread->metrics.delta_sum = 0;
@@ -59,7 +59,7 @@ void switch_out(thread_t* thread)
         case FINISHED:
             uint32_t ci = thread->metrics.delta_sum;
             thread->metrics.ci = ci;
-            thread->metrics.ci_av = ci - (ci >> ALPHA) + (thread->metrics.ci_av >> ALPHA);
+            thread->metrics.ci_av = thread->metrics.ci_av - (thread->metrics.ci_av >> ALPHA) + (ci >> ALPHA);
             break;
 
         default: 
