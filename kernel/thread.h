@@ -50,6 +50,7 @@ typedef struct
     uint32_t ti_av;
     uint32_t t0;
 
+    uint32_t prev_u;
 }   metrics_t;
 
 

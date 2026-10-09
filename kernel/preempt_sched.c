@@ -51,7 +51,6 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].relHeap = &heap2[core];
     g_cpus[core].relHeap->curr_index = 0;
 
-    g_cpus[core].last = 0;
     g_cpus[core].utilization = 0;
 
 
@@ -68,6 +67,8 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].main_thread->thread_status = RUNNING;
     g_cpus[core].main_thread->sp = sp;
     g_cpus[core].main_thread->core = core;
+    g_cpus[core].main_thread->periodicity = APERIODIC;
+    init_metrics(g_cpus[core].main_thread);
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
     g_cpus[core].sched_init = true;
     g_cpus[core].request_terminate = false;
@@ -165,7 +166,6 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
     init_metrics(new_thread);
 
     lock_mutex_persistent(&(g_cpus[core].thread_mutex));
-    add_thread_to_upool(new_thread);
     fifo_push(g_cpus[core].incoming_threads, new_thread);
     unlock_mutex(&(g_cpus[core].thread_mutex));
 
@@ -188,6 +188,8 @@ sys_exit_e kill_thread(thread_t* thread)
 
     thread->periodicity = APERIODIC;
     thread->thread_status = FINISHED;
+    g_cpus[thread->core].utilization -= thread->metrics.prev_u;
+    thread->metrics.prev_u = 0;
     unlock_mutex(&(g_cpus[thread->core].thread_mutex));
 
     // CLAIM: This is corrputing - must verify
@@ -464,7 +466,7 @@ static inline bool next_up(cpu_core_e core)
         while (g_cpus[core].outgoing_threads->size > 0)
         {
             thread_t* thread = fifo_pop(g_cpus[core].outgoing_threads);
-            remove_thread_from_upool(thread);
+            g_cpus[core].utilization -= thread->metrics.prev_u;
             kFree(thread);
         }
 
@@ -494,7 +496,7 @@ inline void next_thread()
 
             // if (g_cpus[core].curr_thread->thread_status == RUNNING) switch_out(g_cpus[core].curr_thread);
             switch_out(g_cpus[core].curr_thread);
-            update_upool(g_cpus[core].curr_thread);
+            update_utilization(g_cpus[core].curr_thread);
 
             g_cpus[core].ticks++;
 

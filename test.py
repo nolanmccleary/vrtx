@@ -49,8 +49,8 @@ RMW_LABELS     = ["8 KB (fits L1)", "256 KB (fits L2)"]
 # g_matmul_samples[MATMUL_REPS] u32 : per-rep cycle counts. Must match workload_matmul.c.
 MATMUL_REPS = 8
 
-# g_edf_metrics[NTASKS] metrics_t : ci, ci_av, prev_cycles, delta_sum, ti, ti_av, t0
-EDF_METRIC_STRUCT = struct.Struct("<7I")
+# g_edf_metrics[NTASKS] metrics_t : ci, ci_av, prev_cycles, delta_sum, ti, ti_av, t0, prev_u
+EDF_METRIC_STRUCT = struct.Struct("<8I")
 EDF_METRIC_SIZE   = EDF_METRIC_STRUCT.size
 
 # g_fault[NUM_CPUS] fault_record_t : magic, vec, pc, spsr, dfsr, dfar, ifsr, ifar

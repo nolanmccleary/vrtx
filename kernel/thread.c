@@ -20,11 +20,9 @@ void switch_in(thread_t *thread)
     switch (thread->thread_status)
     {
         case PENDING:
-            uint32_t ti_av = thread->metrics.ti_av;
             uint32_t ti_curr = curr_cycles - thread->metrics.t0;
-
             thread->metrics.ti = ti_curr;
-            thread->metrics.ti_av = ti_av - (ti_av >> ALPHA) + (ti_curr >> ALPHA);
+            thread->metrics.ti_av = thread->metrics.ti_av - (thread->metrics.ti_av >> ALPHA) + (ti_curr >> ALPHA);
             thread->metrics.t0 = curr_cycles;
 
             thread->metrics.delta_sum = 0;

@@ -26,45 +26,19 @@ inline void update_cpu_scheduler_overhead(cpu_core_e cpu, uint32_t overhead)
 }
 
 
-inline bool add_thread_to_upool(thread_t* thread)
+
+
+void update_utilization(thread_t* thread)
 {
     cpu_core_e core = thread->core;
 
-    if (g_cpus[core].last >= MAX_THREADS) raise_error("UPOOL FULL");
-
-    thread->id = g_cpus[core].last;
-    g_cpus[core].upool[g_cpus[core].last] = thread;
-    g_cpus[core].last++;
-    return true;
-}
-
-
-inline void remove_thread_from_upool(thread_t* thread)
-{
-    cpu_core_e core = thread->core;
-
-    g_cpus[core].last--;
-    thread_t* last = g_cpus[core].upool[g_cpus[core].last];
-    g_cpus[core].upool[thread->id] = last;
-    last->id = thread->id;
-}
-
-
-
-
-void update_upool(thread_t* thread)
-{
-    cpu_core_e core = thread->core;
-
-    uint32_t u = 0;
-    for (size_t i = 0; i < g_cpus[core].last; i++)
+    if (thread->metrics.ti_av > 0 && thread->periodicity == PERIODIC)
     {
-        thread_t* t = g_cpus[core].upool[i];
-        if (t->periodicity == APERIODIC) continue;
-        if (t->metrics.ti_av) u += (uint32_t)(((uint64_t)t->metrics.ci_av << 16) / t->metrics.ti_av);
+        uint32_t u = (uint32_t)(((uint64_t)thread->metrics.ci_av << 16) / thread->metrics.ti_av);
+        g_cpus[core].utilization -= thread->metrics.prev_u;
+        g_cpus[core].utilization += u;
+        thread->metrics.prev_u = u;
     }
-
-    g_cpus[core].utilization = u;
 }
 
 

@@ -18,6 +18,8 @@
 
 
 
+
+
 typedef struct
 {
     _Alignas(32) volatile bool sched_init;
@@ -25,8 +27,6 @@ typedef struct
     //Sched aggregate
     uint32_t ticks;
     uint32_t missed_deadlines;
-    thread_t* upool [MAX_THREADS];
-    size_t last;
     uint32_t utilization;
     uint32_t avg_scheduler_overhead;
 
@@ -52,9 +52,7 @@ extern cpu_t g_cpus[NUM_CPUS];
 cpu_core_e curr_core(void);
 void update_cpu_scheduler_overhead(cpu_core_e cpu, uint32_t overhead);
 
-bool add_thread_to_upool(thread_t* thread);
-void remove_thread_from_upool(thread_t* thread);
-void update_upool(thread_t* thread);
+void update_utilization(thread_t* thread);
 
 void send_cpu_interrupt(cpu_sgi_e interrupt);
 
