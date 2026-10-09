@@ -172,22 +172,6 @@ static sys_exit_e (*const JOBS[NTASKS])(void) =
 };
 
 
-/* Identify the running thread by its job function; idle (main_thread) -> 3. */
-static int trace_idx(thread_t* r)
-{
-    if (r)
-    {
-        if (r->func == job0) return 0;
-        if (r->func == job1) return 1;
-        if (r->func == job2) return 2;
-    }
-
-    return 3;
-}
-
-
-/* Per-tick hook (invoked from the scheduler via KTRACE_TICK_EXIT). Records the
- * running task id for the traced trial only; a no-op otherwise. */
 /* Record the corruption for the host, then trap. raise_error() does not return. */
 static void edf_flag_corruption(const char* msg, thread_t* t, cpu_core_e core,
                                 uint32_t idx, uint32_t expected, uint32_t actual)
@@ -244,16 +228,16 @@ void ktrace_edf_tick(thread_t* running)
     if (!trace_active) return;
 
     cpu_core_e core = curr_core();
-    int idx = trace_idx(running);
+    uint32_t id = running->id;
 
     if (g_trace_len[core] < TRACE_TICKS)
     {
-        g_sched_trace[core][g_trace_len[core]++] = (uint8_t)idx;
+        g_sched_trace[core][g_trace_len[core]++] = (uint8_t)id;
     }
 
-    if (core == CPU0 && idx < (int)NTASKS)
+    if (core == CPU0 && id < NTASKS)
     {
-        g_edf_metrics[idx] = running->metrics;
+        g_edf_metrics[id] = running->metrics;
     }
 
     g_ticks_m[core]    = g_cpus[core].ticks;
@@ -441,8 +425,8 @@ void edf_run(void)
          * push into CPU1's incoming FIFO safe against CPU1's own scheduler. */
         for (uint32_t i = 0; i < NTASKS; i++)
         {
-            g_edf_handles[CPU0][i] = add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC);
-            g_edf_handles[CPU1][i] = add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC);
+            g_edf_handles[CPU0][i] = add_thread_to_core(CPU0, JOBS[i], g_edf_periods[i], PERIODIC, i);
+            g_edf_handles[CPU1][i] = add_thread_to_core(CPU1, JOBS[i], g_edf_periods[i], PERIODIC, i);
         }
 
         g_edf_armed = 1u;   /* task set complete -- watchdog live from here */
@@ -520,6 +504,95 @@ void edf_run(void)
     psched_deinit();
 
     KTRACE_EDF_DONE();
+}
 
-    for (;;) {}
+
+
+/* -------------------------------------------------------------------------
+ * Load-balance test: six equal u=0.25 periodic tasks (total 1.5) handed to the
+ * balancer (add_thread), which should spread them to ~0.75 on each core. Self-
+ * contained: brings the scheduler up, runs, kills its tasks, tears back down.
+ * Tasks are labelled by id; add_thread's return tells us which core each landed on.
+ * ------------------------------------------------------------------------- */
+
+#define BAL_NTASKS   6u
+
+const uint32_t g_bal_periods[BAL_NTASKS] = { 40u, 40u, 60u, 60u, 100u, 100u };
+
+HOST_SHARED volatile uint32_t g_bal_assign[BAL_NTASKS];   /* id -> assigned core */
+HOST_SHARED volatile uint32_t g_bal_done[BAL_NTASKS];     /* per-task completions */
+
+static uint32_t bal_iters[BAL_NTASKS];
+
+
+/* One body for every balance task; each reads its own id from curr_thread. */
+static sys_exit_e bal_job(void)
+{
+    uint32_t id = g_cpus[curr_core()].curr_thread->id;
+
+    do_work(bal_iters[id]);
+
+    g_bal_done[id]++;
+    return SYS_OK;
+}
+
+
+void edf_balance_run(void)
+{
+    pmu_init();
+    heap_init();            /* guarded: no-op if already live */
+    psched_init();
+
+    for (uint32_t c = 0; c < NUM_CPUS; c++)
+    {
+        g_trace_len[c] = 0u;
+        g_core_u_m[c]  = 0u;
+    }
+
+    uint32_t cycles_per_tick = measure_cycles_per_tick();
+    uint32_t cycles_per_iter = measure_cycles_per_iter();
+
+    for (uint32_t i = 0; i < BAL_NTASKS; i++)
+    {
+        uint32_t Ci_ticks = g_bal_periods[i] / 4u;   /* u = 0.25 -> Ci = period/4 */
+        if (Ci_ticks < 1u) Ci_ticks = 1u;
+
+        bal_iters[i]  = (uint32_t)((uint64_t)Ci_ticks * cycles_per_tick / cycles_per_iter);
+        g_bal_done[i] = 0u;
+    }
+
+    g_test_release = 0u;
+
+    thread_t* handles[BAL_NTASKS];
+
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    trace_active = 1u;
+
+    for (uint32_t i = 0; i < BAL_NTASKS; i++)
+    {
+        handles[i] = add_thread(bal_job, g_bal_periods[i], PERIODIC, i);
+        g_bal_assign[i] = (uint32_t)handles[i]->core;
+    }
+
+    __asm__ __volatile__("dmb sy" ::: "memory");
+
+    KTRACE_BALANCE_READY();
+
+    __asm__ __volatile__("cpsie i" ::: "memory");
+
+    KTRACE_WAIT_RELEASE();
+
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    for (uint32_t i = 0; i < BAL_NTASKS; i++)
+    {
+        kill_thread(handles[i]);
+    }
+
+    __asm__ __volatile__("cpsie i" ::: "memory");
+
+    psched_deinit();
+
+    KTRACE_BALANCE_DONE();
 }

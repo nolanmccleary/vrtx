@@ -68,6 +68,7 @@ sys_exit_e psched_core_init(void)
     g_cpus[core].main_thread->sp = sp;
     g_cpus[core].main_thread->core = core;
     g_cpus[core].main_thread->periodicity = APERIODIC;
+    g_cpus[core].main_thread->id = IDLE_ID;
     init_metrics(g_cpus[core].main_thread);
     g_cpus[core].curr_thread = g_cpus[core].main_thread;
     g_cpus[core].sched_init = true;
@@ -144,7 +145,47 @@ sys_exit_e psched_deinit(void)
 
 
 
-thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity)
+thread_t* add_thread(sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, uint32_t id)
+{
+    static cpu_core_e tie_default = CPU0;
+
+    cpu_core_e core;
+    if (g_cpus[CPU0].utilization < g_cpus[CPU1].utilization) core = CPU0;
+    else if (g_cpus[CPU1].utilization < g_cpus[CPU0].utilization) core = CPU1;
+    else { core = tie_default; tie_default = (tie_default == CPU0) ? CPU1 : CPU0; }
+
+    uint32_t irq_state;
+    __asm__ __volatile__("mrs %0, cpsr\n\t"
+                         "cpsid i"
+                         : "=r"(irq_state) :: "memory");
+
+    lock_mutex_persistent(&g_allocator_mutex);
+    thread_t* new_thread = (thread_t*)kMalloc(sizeof(thread_t));
+    unlock_mutex(&g_allocator_mutex);
+
+    new_thread->period = period;
+    new_thread->periodicity = periodicity;
+    new_thread->id = id;
+
+    new_thread->func = func;
+    new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort
+
+    new_thread->core = core;
+    init_metrics(new_thread);
+
+    lock_mutex_persistent(&(g_cpus[core].thread_mutex));
+    fifo_push(g_cpus[core].incoming_threads, new_thread);
+    unlock_mutex(&(g_cpus[core].thread_mutex));
+
+    __asm__ __volatile__("msr cpsr_c, %0" :: "r"(irq_state) : "memory");
+
+
+    return new_thread;
+}
+
+
+
+thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t period, thread_periodicity_e periodicity, uint32_t id)
 {
     uint32_t irq_state;
     __asm__ __volatile__("mrs %0, cpsr\n\t"
@@ -158,6 +199,7 @@ thread_t* add_thread_to_core(cpu_core_e core, sys_exit_e (*func)(void), uint32_t
 
     new_thread->period = period;
     new_thread->periodicity = periodicity;
+    new_thread->id = id;
 
     new_thread->func = func;
     new_thread->sp = (char*)(((uintptr_t)(new_thread->stack + THREAD_STACK_SIZE)) & ~(uintptr_t)0x7); //8-byte align sp so processor doesn't abort

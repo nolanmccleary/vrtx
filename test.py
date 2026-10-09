@@ -19,6 +19,7 @@ RESULTS_DIR = ROOT / "test_results"
 
 EDF_SECONDS   = 12.0
 EDF_TASKS     = 3
+BAL_TASKS     = 6         # load-balance test task count (must match workload_edf.c BAL_NTASKS)
 ALLOC_METRICS = 7
 TRACE_TICKS   = 2400      # g_sched_trace capacity (must match workload_edf.c)
 GANTT_WINDOW  = 720       # ticks shown in the Gantt (>1 hyperperiod)
@@ -533,6 +534,14 @@ def write_edf_csv(path: Path, rows: Sequence[EDFResult]) -> None:
                         *r.c, *r.periods, *r.done, *r.expected, *r.ci_av, *r.ti_av])
 
 
+def write_balance_csv(path: Path, bal: BalanceResult) -> None:
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "core", "period"])
+        for i in range(len(bal.assign)):
+            w.writerow([i, bal.assign[i], bal.periods[i]])
+
+
 # --- plots ------------------------------------------------------------------
 def plot_alloc(metrics: Sequence[Metric], path: Path) -> None:
     names  = [m.name for m in metrics]
@@ -690,6 +699,49 @@ def plot_gantt(trace: Sequence[int], periods: Sequence[int], path: Path, u_permi
     plt.close(fig)
 
 
+def plot_balance(bal: BalanceResult, path: Path, num_cpus: int,
+                 window: int = GANTT_WINDOW) -> None:
+    # One figure, one Gantt per core. Each core's rows are the ids the balancer
+    # assigned to it (from add_thread's returned thread_t->core), labelled by id.
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+    per_core = [[i for i in range(len(bal.assign)) if bal.assign[i] == c] for c in range(num_cpus)]
+    width = min(26.0, max(12.0, window / 130.0))
+    fig, axes = plt.subplots(num_cpus, 1, figsize=(width, 2.6 * num_cpus), squeeze=False)
+
+    for c in range(num_cpus):
+        ax = axes[c][0]
+        ids = per_core[c]
+        nr = len(ids)
+        trace = bal.traces[c] if c < len(bal.traces) else b""
+        n = min(len(trace), window)
+        for row, tid in enumerate(ids):
+            y = nr - 1 - row                             # first id at top
+            segs, t = [], 0
+            while t < n:
+                if trace[t] == tid:
+                    s = t
+                    while t < n and trace[t] == tid:
+                        t += 1
+                    segs.append((s, t - s))
+                else:
+                    t += 1
+            ax.broken_barh(segs, (y + 0.15, 0.7), facecolors=colors[tid % len(colors)])
+            for k in range(0, n, bal.periods[tid]):      # release arrows
+                ax.annotate("", xy=(k, y + 1.0), xytext=(k, y + 0.12),
+                            arrowprops=dict(arrowstyle="->", color="black", lw=0.7))
+        ax.set_yticks([nr - 1 - row + 0.5 for row in range(nr)])
+        ax.set_yticklabels([f"id={tid} (T={bal.periods[tid]})" for tid in ids], fontsize=8)
+        ax.set_ylim(0, max(nr, 1))
+        ax.set_xlim(0, max(n, 1))
+        ax.set_xlabel("time (ticks)")
+        ax.set_title(f"CPU{c} load-balanced  (Umeas={bal.core_u[c]:.3f}, {nr} tasks; "
+                     f"first {n} ticks; up-arrow = release)")
+        ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 # --- phases -----------------------------------------------------------------
 def allocbench(ocd: OCD, symbols: dict[str, int]) -> tuple[list[Metric], dict[str, dict[str, list[int]]]]:
     bp = symbols["ktrace_bp_alloc_done"]
@@ -762,6 +814,56 @@ def edf_test(ocd: OCD, symbols: dict[str, int], num_cpus: int,
     ocd.expect_breakpoint(bp_edf_done, timeout=30.0)
 
     return edf_results, traces, cpu1_traces
+
+
+@dataclass(frozen=True)
+class BalanceResult:
+    assign: tuple[int, ...]           # id -> assigned core
+    periods: tuple[int, ...]          # id -> period (ticks)
+    core_u: tuple[float, ...]         # per-CPU empirical utilization (g_core_u_m / 65536)
+    traces: tuple[bytes, ...]         # per-CPU schedule trace (ids; 0xFF = idle)
+
+
+def balance_test(ocd: OCD, symbols: dict[str, int], num_cpus: int) -> BalanceResult:
+    bp_ready = symbols["ktrace_bp_balance_ready"]
+    bp_done  = symbols["ktrace_bp_balance_done"]
+
+    # Firmware is parked on bp_edf_done (sweep complete). Step it on into the
+    # load-balance routine: it builds the six tasks via add_thread, records each
+    # one's assigned core (g_bal_assign), then stops at bp_balance_ready with
+    # interrupts still off -- nothing has run yet, so the assignment is final.
+    ocd.continue_from_breakpoint()
+    ocd.expect_breakpoint(bp_ready, timeout=15.0)
+
+    assign  = tuple(ocd.read_words(symbols["g_bal_assign"], BAL_TASKS))
+    periods = tuple(ocd.read_words(symbols["g_bal_periods"], BAL_TASKS))
+
+    # Let both cores run the balanced set for a measurement window.
+    ocd.continue_from_breakpoint()
+    time.sleep(EDF_SECONDS)
+    ocd.halt()
+
+    if ocd.read_fault():
+        raise RuntimeError(ocd.diagnose())
+
+    core_u = tuple(v / 65536.0 for v in ocd.read_words(symbols["g_core_u_m"], num_cpus))
+
+    traces: list[bytes] = []
+    for c in range(num_cpus):
+        n = min(ocd.read_u32(symbols["g_trace_len"] + 4 * c), TRACE_TICKS)   # g_trace_len[c]
+        traces.append(ocd.read_bytes(symbols["g_sched_trace"] + TRACE_TICKS * c, n) if n else b"")
+
+    print("\nload balance:")
+    for i in range(BAL_TASKS):
+        print(f"  id={i} (T={periods[i]}) -> CPU{assign[i]}")
+    print("  " + "  ".join(f"U(CPU{c})={core_u[c]:.3f}" for c in range(num_cpus)))
+
+    # Release the window; firmware kills its tasks, tears down, stops at done.
+    ocd.write_u32(symbols["g_test_release"], 1)
+    ocd.resume()
+    ocd.expect_breakpoint(bp_done, timeout=30.0)
+
+    return BalanceResult(assign, periods, core_u, tuple(traces))
 
 
 def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list[EDFResult],
@@ -837,13 +939,16 @@ def main(bootable: bool = False) -> None:
         "g_edf_periods", "g_edf_C", "g_edf_done", "g_sched_trace", "g_trace_len", "g_test_release",
         "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
         "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault",
-        "g_error_message", "g_error_ctx", "g_edf_bad_thread"))
+        "g_error_message", "g_error_ctx", "g_edf_bad_thread",
+        "g_bal_assign", "g_bal_periods", "ktrace_bp_balance_ready", "ktrace_bp_balance_done"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
     bp_edf_ready = symbols["ktrace_bp_edf_ready"]
     bp_edf_done  = symbols["ktrace_bp_edf_done"]
     bp_fault     = symbols["fault_trap"]
+
+    balance: BalanceResult | None = None
 
     outdir = RESULTS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
     outdir.mkdir(parents=True, exist_ok=True)
@@ -878,6 +983,8 @@ def main(bootable: bool = False) -> None:
         ocd.num_cpus   = num_cpus
         ocd.add_hw_breakpoint(bp_edf_ready)
         ocd.add_hw_breakpoint(bp_edf_done)
+        ocd.add_hw_breakpoint(symbols["ktrace_bp_balance_ready"])
+        ocd.add_hw_breakpoint(symbols["ktrace_bp_balance_done"])
         ocd.add_hw_breakpoint(bp_fault)
         if bootable:
             ocd.write_u32(symbols["g_boot_release"], 1)
@@ -886,6 +993,7 @@ def main(bootable: bool = False) -> None:
         try:
             alloc_metrics, warmup = allocbench(ocd, symbols)
             edf_results, traces, cpu1_traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
+            balance = balance_test(ocd, symbols, num_cpus)
         except KeyboardInterrupt:
             # Ctrl-C usually means the run hung -- dump where both cores are stuck
             # (+ any fault record) before the socket closes. fault_addr/num_cpus are
@@ -899,6 +1007,9 @@ def main(bootable: bool = False) -> None:
             raise SystemExit(130)
 
     write_artifacts(outdir, alloc_metrics, edf_results, traces, periods, cpu1_traces, warmup)
+    if balance is not None:
+        write_balance_csv(outdir / "balance.csv", balance)
+        plot_balance(balance, outdir / "edf_balance.png", num_cpus)
     print(f"\nPASS   artifacts in {outdir}")
 
 

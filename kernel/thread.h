@@ -10,6 +10,7 @@
 #define THREAD_STACK_SIZE 0x2000
 #define MODE_SYS          0x1F   /* CPSR mode bits forged into a new thread's SPSR (see prime_thread) */
 #define MAX_THREADS 100
+#define IDLE_ID     0xFFu   /* main_thread's id -- marks idle ticks in the schedule trace */
 
 
 

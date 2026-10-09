@@ -27,6 +27,8 @@
 void ktrace_bp_alloc_done(void);
 void ktrace_bp_edf_ready(void);
 void ktrace_bp_edf_done(void);
+void ktrace_bp_balance_ready(void);
+void ktrace_bp_balance_done(void);
 
 
 /* -------------------------------------------------------------------------
@@ -52,6 +54,12 @@ void ktrace_edf_tick(thread_t* running);
 
 #define KTRACE_EDF_DONE() \
     ktrace_bp_edf_done()
+
+#define KTRACE_BALANCE_READY() \
+    ktrace_bp_balance_ready()
+
+#define KTRACE_BALANCE_DONE() \
+    ktrace_bp_balance_done()
 
 
 /* -------------------------------------------------------------------------
@@ -111,6 +119,8 @@ void ktrace_wait_boot(void);
 #define KTRACE_ALLOC_DONE()          ((void)0)
 #define KTRACE_EDF_READY()           ((void)0)
 #define KTRACE_EDF_DONE()            ((void)0)
+#define KTRACE_BALANCE_READY()       ((void)0)
+#define KTRACE_BALANCE_DONE()        ((void)0)
 
 #define KTRACE_TICK_EXIT(running)    ((void)0)
 

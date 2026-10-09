@@ -23,6 +23,7 @@ void allocbench_run(void);
 void rmw_run(void);
 void matmul_run(void);
 void edf_run(void);
+void edf_balance_run(void);
 
 void main(void)
 {
@@ -38,6 +39,7 @@ void main(void)
     KTRACE_ALLOC_DONE();
 
     edf_run();
+    edf_balance_run();
 #endif
 
     for (;;) { }

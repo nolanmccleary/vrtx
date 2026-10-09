@@ -50,6 +50,30 @@ void ktrace_bp_edf_done(void)
 }
 
 
+KTRACE_BP_ATTR
+void ktrace_bp_balance_ready(void)
+{
+    __asm__ __volatile__(
+        "nop"
+        :
+        :
+        : "memory"
+    );
+}
+
+
+KTRACE_BP_ATTR
+void ktrace_bp_balance_done(void)
+{
+    __asm__ __volatile__(
+        "nop"
+        :
+        :
+        : "memory"
+    );
+}
+
+
 void ktrace_wait_release(void)
 {
     g_test_release = 0u;
