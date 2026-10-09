@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "timers.h"
 #include "preempt_sched.h"
+#include "ktrace.h"
 
 
 
@@ -41,6 +42,18 @@ void c_irq_handler(int id)
             GTIMER_ISR = 1; //Timer ISR ACK, when this
             next_thread();
             break;
+
+
+#ifdef MODE_TEST
+        case CPU_IRQ_PING:
+            KTRACE_IRQ_PING();
+            break;
+
+
+        case CPU_MUTEX_HOLD:
+            KTRACE_MUTEX_HOLD();
+            break;
+#endif
 
 
         default:

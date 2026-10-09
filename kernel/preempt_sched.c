@@ -531,6 +531,10 @@ inline void next_thread()
     uint32_t overhead = pmu_cycles();
     cpu_core_e core = curr_core();
 
+#ifdef MODE_TEST
+    thread_t* sched_prev = g_cpus[core].curr_thread;
+#endif
+
     if (lock_mutex_best_effort(&(g_cpus[core].thread_mutex)) == LOCK_OK)
     {
         if (g_cpus[core].sched_init && !g_cpus[core].request_terminate)
@@ -671,4 +675,6 @@ inline void next_thread()
 
     overhead = pmu_cycles() - overhead;
     update_cpu_scheduler_overhead(core, overhead);
+
+    KTRACE_SCHED_COST(overhead, g_cpus[core].curr_thread != sched_prev);
 }

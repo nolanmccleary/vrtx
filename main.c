@@ -24,6 +24,7 @@ void rmw_run(void);
 void matmul_run(void);
 void edf_run(void);
 void edf_balance_run(void);
+void micro_run(void);
 
 void main(void)
 {
@@ -40,6 +41,7 @@ void main(void)
 
     edf_run();
     edf_balance_run();
+    micro_run();
 #endif
 
     for (;;) { }

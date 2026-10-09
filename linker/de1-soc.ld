@@ -20,7 +20,7 @@ _ocram_origin = ORIGIN(OCRAM);
  * Configuration
  * ------------------------------------------------------------------------- */
 
-_stack_size     = 0x400;
+_stack_size     = 0x300;   /* temporary: freed OCRAM to fit the micro workload; revert once kernel/app text split moves app code to SDRAM */
 _abt_stack_size = 0x200;
 _und_stack_size = 0x200;
 

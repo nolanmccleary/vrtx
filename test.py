@@ -20,6 +20,9 @@ RESULTS_DIR = ROOT / "test_results"
 EDF_SECONDS   = 12.0
 EDF_TASKS     = 3
 BAL_TASKS     = 6         # load-balance test task count (must match workload_edf.c BAL_NTASKS)
+CTXSW_SAMPLES = 1024      # micro sample-ring sizes (must match workload_micro.c)
+IRQ_SAMPLES   = 1024
+MUTEX_SAMPLES = 1024
 ALLOC_METRICS = 7
 TRACE_TICKS   = 2400      # g_sched_trace capacity (must match workload_edf.c)
 GANTT_WINDOW  = 720       # ticks shown in the Gantt (>1 hyperperiod)
@@ -364,6 +367,9 @@ class OCD:
         if "error" in out or "resource not available" in out:
             raise RuntimeError(f"cannot install hw breakpoint at 0x{addr:08x}:\n{out}")
 
+    def remove_hw_breakpoint(self, addr: int) -> None:
+        self.cmd(f"rbp 0x{addr:08x}")
+
     def expect_breakpoint(self, expected_addr: int, *, timeout: float = 30.0) -> None:
         pc = self.wait_halt(timeout)
         if pc != expected_addr:
@@ -540,6 +546,18 @@ def write_balance_csv(path: Path, bal: BalanceResult) -> None:
         w.writerow(["id", "core", "period"])
         for i in range(len(bal.assign)):
             w.writerow([i, bal.assign[i], bal.periods[i]])
+
+
+def _write_micro_csv(path: Path, rows: Sequence[tuple[str, Sequence[int]]], extra: Sequence = ()) -> None:
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["distribution", "count", "min", "mean", "p50", "p99", "max", "unit"])
+        for name, v in rows:
+            s = dist_stats(v)
+            w.writerow([name, s["count"], s["min"], round(s["mean"], 1),
+                        s["p50"], s["p99"], s["max"], "cycles"])
+        for row in extra:
+            w.writerow(row)
 
 
 # --- plots ------------------------------------------------------------------
@@ -742,6 +760,67 @@ def plot_balance(bal: BalanceResult, path: Path, num_cpus: int,
     plt.close(fig)
 
 
+def _pct(sorted_v: Sequence[int], q: float) -> int:
+    if not sorted_v:
+        return 0
+    i = min(len(sorted_v) - 1, max(0, int(round(q * (len(sorted_v) - 1)))))
+    return sorted_v[i]
+
+
+def dist_stats(v: Sequence[int]) -> dict[str, float]:
+    s = sorted(v)
+    n = len(s)
+    if not n:
+        return {"count": 0, "min": 0, "mean": 0.0, "p50": 0, "p99": 0, "max": 0}
+    return {"count": n, "min": s[0], "mean": sum(s) / n,
+            "p50": _pct(s, 0.50), "p99": _pct(s, 0.99), "max": s[-1]}
+
+
+def _hist(ax, v: Sequence[int], title: str, color: str) -> None:
+    # Clip the x-range to p99 so a few outliers don't flatten the body of the
+    # distribution; the max is still reported in the annotation.
+    s = dist_stats(v)
+    hi = max(int(s["p99"]), 1)
+    shown = [x for x in v if x <= hi]
+    ax.hist(shown, bins=60, color=color, alpha=0.8)
+    ax.axvline(s["mean"], color="black", lw=1.0, ls="--")
+    ax.axvline(s["p99"], color="red", lw=1.0, ls=":")
+    ax.set_title(f"{title}  (n={s['count']}, min={s['min']}, mean={s['mean']:.1f}, "
+                 f"p99={int(s['p99'])}, max={s['max']} cyc; x clipped to p99)", fontsize=9)
+    ax.set_xlabel("cycles")
+    ax.set_ylabel("count")
+    ax.grid(axis="y", alpha=0.3)
+
+
+def plot_ctxsw(res: MicroResult, path: Path) -> None:
+    total = res.switch_count + res.resume_count
+    p = res.switch_count / total if total else 0.0
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6))
+    _hist(axes[0], res.ctxsw_switch, "next_thread -- switch (different thread ran)", "#1f77b4")
+    _hist(axes[1], res.ctxsw_resume, "next_thread -- resume (same thread continued)", "#2ca02c")
+    fig.suptitle(f"Context-switch cost  (switch fraction p = {p:.3f} for this taskset)", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def plot_irqlat(res: MicroResult, path: Path) -> None:
+    fig, ax = plt.subplots(1, 1, figsize=(10, 3.4))
+    _hist(ax, res.irqlat, "IRQ dispatch latency -- SGI trigger to ISR body", "#ff7f0e")
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def plot_mutex(res: MicroResult, path: Path) -> None:
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6))
+    _hist(axes[0], res.mutex_unc, "mutex -- lock+unlock, uncontended (one core)", "#9467bd")
+    _hist(axes[1], res.mutex_con, "mutex -- acquire latency, contended (CPU1 holds)", "#d62728")
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 # --- phases -----------------------------------------------------------------
 def allocbench(ocd: OCD, symbols: dict[str, int]) -> tuple[list[Metric], dict[str, dict[str, list[int]]]]:
     bp = symbols["ktrace_bp_alloc_done"]
@@ -756,6 +835,7 @@ def allocbench(ocd: OCD, symbols: dict[str, int]) -> tuple[list[Metric], dict[st
         "matmul": collect_matmul_samples(ocd, symbols["g_matmul_samples"]),
     }
     print_alloc(metrics)
+    ocd.remove_hw_breakpoint(bp)   # one-shot; free the HW slot for the micro phase (A9 has 6)
     return list(metrics), warmup
 
 
@@ -866,6 +946,89 @@ def balance_test(ocd: OCD, symbols: dict[str, int], num_cpus: int) -> BalanceRes
     return BalanceResult(assign, periods, core_u, tuple(traces))
 
 
+@dataclass(frozen=True)
+class MicroResult:
+    ctxsw_switch: tuple[int, ...]     # per-tick next_thread cost, cycles, switch ticks
+    ctxsw_resume: tuple[int, ...]     # ... resume (same-thread) ticks
+    switch_count: int                 # full counts (unbounded) -> p = switch/(switch+resume)
+    resume_count: int
+    irqlat: tuple[int, ...]           # SGI trigger -> ISR body, cycles
+    mutex_unc: tuple[int, ...]        # lock+unlock uncontended, cycles
+    mutex_con: tuple[int, ...]        # acquire latency while CPU1 holds, cycles
+
+
+def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
+    bp_done = symbols["ktrace_bp_micro_done"]
+    ocd.add_hw_breakpoint(bp_done)   # armed late: alloc_done was freed, so this is the 6th slot
+
+    # Firmware is parked on bp_balance_done. The whole micro suite (ctxsw, irqlat,
+    # mutex) runs free and self-contained. Poll rather than one long wait_halt
+    # (which would blow the 45s socket timeout): halt every couple seconds, and if
+    # it hasn't finished, read g_micro_phase so a stall names the failing phase.
+    bp_fault = symbols["fault_trap"]
+    ocd.continue_from_breakpoint()
+
+    deadline = time.time() + 90.0
+    while True:
+        time.sleep(2.0)
+        ocd.halt()
+        pc = ocd.pc()
+        if pc == bp_done:
+            break
+        if pc == bp_fault:
+            raise RuntimeError(ocd.diagnose())
+        phase = ocd.read_u32(symbols["g_micro_phase"])
+        if time.time() > deadline:
+            raise RuntimeError(f"micro stalled in phase {phase} "
+                               f"(1=ctxsw 2=irqlat 3=mutex 4=done), pc=0x{pc:08x}:\n{ocd.diagnose()}")
+        print(f"  micro running: phase={phase} pc=0x{pc:08x}")
+        ocd.resume()
+
+    switch_count = ocd.read_u32(symbols["g_ctxsw_switch_count"])
+    resume_count = ocd.read_u32(symbols["g_ctxsw_resume_count"])
+    n_sw = min(switch_count, CTXSW_SAMPLES)
+    n_rs = min(resume_count, CTXSW_SAMPLES)
+
+    # 0xFFFFFFFF marks an IRQ ping the firmware never saw (guard expired); drop
+    # those so they don't swamp the distribution, and report how many were lost.
+    # 0xFFFFFFFF marks a sample the firmware gave up on (guard/cap expired): an IRQ
+    # ping never seen, or a contended acquire that never won. Drop and count them.
+    irqlat_raw = ocd.read_words(symbols["g_irqlat"], IRQ_SAMPLES)
+    irqlat = tuple(x for x in irqlat_raw if x != 0xFFFFFFFF)
+    irq_lost = len(irqlat_raw) - len(irqlat)
+
+    con_raw = ocd.read_words(symbols["g_mutex_con"], MUTEX_SAMPLES)
+    mutex_con = tuple(x for x in con_raw if x != 0xFFFFFFFF)
+    con_lost = len(con_raw) - len(mutex_con)
+
+    res = MicroResult(
+        ctxsw_switch=tuple(ocd.read_words(symbols["g_ctxsw_switch"], n_sw)) if n_sw else (),
+        ctxsw_resume=tuple(ocd.read_words(symbols["g_ctxsw_resume"], n_rs)) if n_rs else (),
+        switch_count=switch_count,
+        resume_count=resume_count,
+        irqlat=irqlat,
+        mutex_unc=tuple(ocd.read_words(symbols["g_mutex_unc"], MUTEX_SAMPLES)),
+        mutex_con=mutex_con,
+    )
+    if irq_lost:
+        print(f"  WARNING: {irq_lost}/{IRQ_SAMPLES} IRQ pings lost (SGI not delivered)")
+    if con_lost:
+        print(f"  WARNING: {con_lost}/{MUTEX_SAMPLES} contended acquires hit the retry cap")
+
+    total = switch_count + resume_count
+    p = switch_count / total if total else 0.0
+    print("\nmicrobenchmarks (cycles):")
+    for name, v in (("ctxsw switch", res.ctxsw_switch), ("ctxsw resume", res.ctxsw_resume),
+                    ("irq dispatch", res.irqlat), ("mutex uncont", res.mutex_unc),
+                    ("mutex cont",   res.mutex_con)):
+        s = dist_stats(v)
+        print(f"  {name:13s} n={s['count']:5d}  min={s['min']:6d}  mean={s['mean']:8.1f}  "
+              f"p99={s['p99']:6d}  max={s['max']:6d}")
+    print(f"  switch fraction p = {p:.3f}  ({switch_count} switch / {resume_count} resume)")
+
+    return res
+
+
 def write_artifacts(outdir: Path, alloc_metrics: list[Metric], edf_results: list[EDFResult],
                     traces: dict[int, bytes], periods: tuple[int, ...],
                     cpu1_traces: dict[int, bytes] | None = None,
@@ -940,7 +1103,9 @@ def main(bootable: bool = False) -> None:
         "g_alloc_samples", "g_rmw_samples", "g_matmul_samples",
         "ktrace_bp_alloc_done", "ktrace_bp_edf_ready", "ktrace_bp_edf_done", "fault_trap", "g_fault",
         "g_error_message", "g_error_ctx", "g_edf_bad_thread",
-        "g_bal_assign", "g_bal_periods", "ktrace_bp_balance_ready", "ktrace_bp_balance_done"))
+        "g_bal_assign", "g_bal_periods", "ktrace_bp_balance_ready", "ktrace_bp_balance_done",
+        "g_ctxsw_switch", "g_ctxsw_resume", "g_ctxsw_switch_count", "g_ctxsw_resume_count",
+        "g_irqlat", "g_mutex_unc", "g_mutex_con", "ktrace_bp_micro_done", "g_micro_phase"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
@@ -949,6 +1114,7 @@ def main(bootable: bool = False) -> None:
     bp_fault     = symbols["fault_trap"]
 
     balance: BalanceResult | None = None
+    micro: MicroResult | None = None
 
     outdir = RESULTS_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
     outdir.mkdir(parents=True, exist_ok=True)
@@ -994,6 +1160,7 @@ def main(bootable: bool = False) -> None:
             alloc_metrics, warmup = allocbench(ocd, symbols)
             edf_results, traces, cpu1_traces = edf_test(ocd, symbols, num_cpus, periods, u_values)
             balance = balance_test(ocd, symbols, num_cpus)
+            micro = micro_test(ocd, symbols)
         except KeyboardInterrupt:
             # Ctrl-C usually means the run hung -- dump where both cores are stuck
             # (+ any fault record) before the socket closes. fault_addr/num_cpus are
@@ -1010,6 +1177,19 @@ def main(bootable: bool = False) -> None:
     if balance is not None:
         write_balance_csv(outdir / "balance.csv", balance)
         plot_balance(balance, outdir / "edf_balance.png", num_cpus)
+    if micro is not None:
+        total = micro.switch_count + micro.resume_count
+        p = micro.switch_count / total if total else 0.0
+        _write_micro_csv(outdir / "ctxsw.csv",
+                         [("switch", micro.ctxsw_switch), ("resume", micro.ctxsw_resume)],
+                         extra=[[], ["switch_fraction_p", round(p, 4)],
+                                ["switch_count", micro.switch_count], ["resume_count", micro.resume_count]])
+        _write_micro_csv(outdir / "irqlat.csv", [("irq_dispatch", micro.irqlat)])
+        _write_micro_csv(outdir / "mutex.csv",
+                         [("uncontended", micro.mutex_unc), ("contended", micro.mutex_con)])
+        plot_ctxsw(micro, outdir / "ctxsw.png")
+        plot_irqlat(micro, outdir / "irqlat.png")
+        plot_mutex(micro, outdir / "mutex.png")
     print(f"\nPASS   artifacts in {outdir}")
 
 

@@ -29,6 +29,20 @@ void ktrace_bp_edf_ready(void);
 void ktrace_bp_edf_done(void);
 void ktrace_bp_balance_ready(void);
 void ktrace_bp_balance_done(void);
+void ktrace_bp_micro_done(void);
+
+
+/* -------------------------------------------------------------------------
+ * Microbenchmark hooks (test builds only), implemented in workload_micro.c:
+ *   ktrace_sched_cost -- next_thread's per-invocation cost, classified by whether
+ *                        a different thread actually ran (switch) or not (resume)
+ *   ktrace_irq_ping   -- CPU_IRQ_PING ISR body: timestamps the SGI dispatch
+ *   ktrace_mutex_hold -- CPU_MUTEX_HOLD ISR body: CPU1's contended-lock holder loop
+ * ------------------------------------------------------------------------- */
+
+void ktrace_sched_cost(uint32_t cost, int switched);
+void ktrace_irq_ping(void);
+void ktrace_mutex_hold(void);
 
 
 /* -------------------------------------------------------------------------
@@ -60,6 +74,18 @@ void ktrace_edf_tick(thread_t* running);
 
 #define KTRACE_BALANCE_DONE() \
     ktrace_bp_balance_done()
+
+#define KTRACE_MICRO_DONE() \
+    ktrace_bp_micro_done()
+
+#define KTRACE_SCHED_COST(cost, switched) \
+    ktrace_sched_cost((cost), (switched))
+
+#define KTRACE_IRQ_PING() \
+    ktrace_irq_ping()
+
+#define KTRACE_MUTEX_HOLD() \
+    ktrace_mutex_hold()
 
 
 /* -------------------------------------------------------------------------
@@ -121,6 +147,10 @@ void ktrace_wait_boot(void);
 #define KTRACE_EDF_DONE()            ((void)0)
 #define KTRACE_BALANCE_READY()       ((void)0)
 #define KTRACE_BALANCE_DONE()        ((void)0)
+#define KTRACE_MICRO_DONE()          ((void)0)
+#define KTRACE_SCHED_COST(cost, switched) ((void)0)
+#define KTRACE_IRQ_PING()            ((void)0)
+#define KTRACE_MUTEX_HOLD()          ((void)0)
 
 #define KTRACE_TICK_EXIT(running)    ((void)0)
 

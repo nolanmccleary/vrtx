@@ -55,6 +55,7 @@ CORE := \
 	bench/workload_allocbench.c \
 	bench/workload_rmw.c \
 	bench/workload_matmul.c \
+	bench/workload_micro.c \
 	kernel/mutex.s \
 
 

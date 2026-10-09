@@ -26,6 +26,8 @@ typedef enum
     CPU_PSCHED_INIT_ACK,
     CPU_PSCHED_DEINIT_REQUEST,
     CPU_PSCHED_DEINIT_ACK,
+    CPU_IRQ_PING,
+    CPU_MUTEX_HOLD,
 }   cpu_sgi_e;
 
 
