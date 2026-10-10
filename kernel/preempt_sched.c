@@ -415,8 +415,8 @@ static inline bool next_up(cpu_core_e core)
     while (g_cpus[core].relHeap->curr_index > 0 && geq_wrapped(g_cpus[core].ticks, g_cpus[core].relHeap->heap[0].thread->release_time))
     {
         pop_heap(g_cpus[core].relHeap, &thread);
-        thread->dirty = false;
-        thread->thread_status = PENDING;
+        // thread->dirty = false;
+        //thread->thread_status = PENDING; No longer assume its always pending
         insert_node(g_cpus[core].deadHeap, thread, thread->deadline);
     }
 
@@ -438,7 +438,8 @@ static inline bool next_up(cpu_core_e core)
 
         if (thread->thread_status == FINISHED)
         {
-            pop_heap(g_cpus[core].deadHeap, &thread);
+            // pop_heap(g_cpus[core].deadHeap, &thread);
+            remove_node(g_cpus[core].deadHeap);
 
             if (thread->periodicity == PERIODIC)
             {
@@ -463,6 +464,8 @@ static inline bool next_up(cpu_core_e core)
 
                 else //Add to release heap
                 {
+                    thread->dirty = false;
+                    thread->thread_status = PENDING;
                     insert_node(g_cpus[core].relHeap, thread, thread->release_time);
                 }
 
@@ -485,6 +488,16 @@ static inline bool next_up(cpu_core_e core)
 
         if(thread->thread_status == PENDING || thread->thread_status == RUNNING)
         {
+            if (!geq_wrapped(g_cpus[core].ticks, thread->release_time)) //Thread got suspended
+            {
+                thread->deadline = thread->release_time + thread->period;
+                // pop_heap(g_cpus[core].deadHeap, &thread);
+                remove_node(g_cpus[core].deadHeap);
+                insert_node(g_cpus[core].relHeap, thread, thread->release_time);
+                continue;
+            }
+            
+
             if (geq_wrapped(g_cpus[core].ticks, thread->deadline) && !thread->dirty)
             {
                 thread->dirty = true;

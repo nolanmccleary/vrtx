@@ -106,7 +106,7 @@ heap_op_e insert_node(heap_t* heap, thread_t* thread, uint32_t order)
 }
 
 
-static heap_op_e remove_node(heap_t* heap)
+heap_op_e remove_node(heap_t* heap)
 {
     if (heap->curr_index > 0)
     {
