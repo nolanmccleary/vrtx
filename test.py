@@ -10,6 +10,7 @@ from typing import Sequence
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 
 ROOT        = Path(__file__).resolve().parent
@@ -23,6 +24,7 @@ BAL_TASKS     = 6         # load-balance test task count (must match workload_ed
 CTXSW_SAMPLES = 1024      # micro sample-ring sizes (must match workload_micro.c)
 IRQ_SAMPLES   = 1024
 MUTEX_SAMPLES = 1024
+MEMLAT_SAMPLES = 8192     # matches workload_micro.c (bumped to catch SDRAM's spread)
 ALLOC_METRICS = 7
 TRACE_TICKS   = 2400      # g_sched_trace capacity (must match workload_edf.c)
 GANTT_WINDOW  = 720       # ticks shown in the Gantt (>1 hyperperiod)
@@ -777,16 +779,14 @@ def dist_stats(v: Sequence[int]) -> dict[str, float]:
 
 
 def _hist(ax, v: Sequence[int], title: str, color: str) -> None:
-    # Clip the x-range to p99 so a few outliers don't flatten the body of the
-    # distribution; the max is still reported in the annotation.
+    # One bar per integer cycle value across the observed range -- a true count
+    # histogram, no binning, no clipping, no overlay lines. Stats go in the title.
     s = dist_stats(v)
-    hi = max(int(s["p99"]), 1)
-    shown = [x for x in v if x <= hi]
-    ax.hist(shown, bins=60, color=color, alpha=0.8)
-    ax.axvline(s["mean"], color="black", lw=1.0, ls="--")
-    ax.axvline(s["p99"], color="red", lw=1.0, ls=":")
+    if v:
+        lo, hi = min(v), max(v)
+        ax.hist(v, bins=range(lo, hi + 2), color=color)   # edges lo..hi+1 -> one bar per cycle
     ax.set_title(f"{title}  (n={s['count']}, min={s['min']}, mean={s['mean']:.1f}, "
-                 f"p99={int(s['p99'])}, max={s['max']} cyc; x clipped to p99)", fontsize=9)
+                 f"p99={int(s['p99'])}, max={s['max']} cyc)", fontsize=9)
     ax.set_xlabel("cycles")
     ax.set_ylabel("count")
     ax.grid(axis="y", alpha=0.3)
@@ -816,6 +816,24 @@ def plot_mutex(res: MicroResult, path: Path) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(10, 6))
     _hist(axes[0], res.mutex_unc, "mutex -- lock+unlock, uncontended (one core)", "#9467bd")
     _hist(axes[1], res.mutex_con, "mutex -- acquire latency, contended (CPU1 holds)", "#d62728")
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def plot_memlat(res: MicroResult, path: Path) -> None:
+    series = [("SDRAM read", res.memlat_sdram_rd), ("SDRAM write", res.memlat_sdram_wr),
+              ("OCRAM read", res.memlat_ocram_rd), ("OCRAM write", res.memlat_ocram_wr)]
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7))
+    for ax, (title, v) in zip(axes.flat, series):
+        lo, hi = min(v), max(v)
+        pad = max(3, (hi - lo) // 10)               # frame each panel to its own data
+        ax.hist(v, bins=range(lo, hi + 2))          # bar width always 1 cycle
+        ax.set_xlim(lo - pad, hi + pad)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_title(title)
+        ax.set_xlabel("cycles")
+        ax.set_ylabel("count")
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
@@ -955,6 +973,11 @@ class MicroResult:
     irqlat: tuple[int, ...]           # SGI trigger -> ISR body, cycles
     mutex_unc: tuple[int, ...]        # lock+unlock uncontended, cycles
     mutex_con: tuple[int, ...]        # acquire latency while CPU1 holds, cycles
+    memlat_sdram_rd: tuple[int, ...]  # uncached single-word READ latency, SDRAM, cycles
+    memlat_sdram_wr: tuple[int, ...]  # uncached single-word WRITE latency, SDRAM, cycles
+    memlat_ocram_rd: tuple[int, ...]  # uncached single-word READ latency, OCRAM, cycles
+    memlat_ocram_wr: tuple[int, ...]  # uncached single-word WRITE latency, OCRAM, cycles
+    memlat_baseline: int              # empty-window pmu+dsb overhead, cycles (common-mode offset)
 
 
 def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
@@ -962,7 +985,7 @@ def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
     ocd.add_hw_breakpoint(bp_done)   # armed late: alloc_done was freed, so this is the 6th slot
 
     # Firmware is parked on bp_balance_done. The whole micro suite (ctxsw, irqlat,
-    # mutex) runs free and self-contained. Poll rather than one long wait_halt
+    # mutex, memlat) runs free and self-contained. Poll rather than one long wait_halt
     # (which would blow the 45s socket timeout): halt every couple seconds, and if
     # it hasn't finished, read g_micro_phase so a stall names the failing phase.
     bp_fault = symbols["fault_trap"]
@@ -980,7 +1003,7 @@ def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
         phase = ocd.read_u32(symbols["g_micro_phase"])
         if time.time() > deadline:
             raise RuntimeError(f"micro stalled in phase {phase} "
-                               f"(1=ctxsw 2=irqlat 3=mutex 4=done), pc=0x{pc:08x}:\n{ocd.diagnose()}")
+                               f"(1=ctxsw 2=irqlat 3=mutex 4=memlat 5=done), pc=0x{pc:08x}:\n{ocd.diagnose()}")
         print(f"  micro running: phase={phase} pc=0x{pc:08x}")
         ocd.resume()
 
@@ -989,8 +1012,6 @@ def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
     n_sw = min(switch_count, CTXSW_SAMPLES)
     n_rs = min(resume_count, CTXSW_SAMPLES)
 
-    # 0xFFFFFFFF marks an IRQ ping the firmware never saw (guard expired); drop
-    # those so they don't swamp the distribution, and report how many were lost.
     # 0xFFFFFFFF marks a sample the firmware gave up on (guard/cap expired): an IRQ
     # ping never seen, or a contended acquire that never won. Drop and count them.
     irqlat_raw = ocd.read_words(symbols["g_irqlat"], IRQ_SAMPLES)
@@ -1009,6 +1030,11 @@ def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
         irqlat=irqlat,
         mutex_unc=tuple(ocd.read_words(symbols["g_mutex_unc"], MUTEX_SAMPLES)),
         mutex_con=mutex_con,
+        memlat_sdram_rd=tuple(ocd.read_words(symbols["g_memlat_sdram_rd"], MEMLAT_SAMPLES)),
+        memlat_sdram_wr=tuple(ocd.read_words(symbols["g_memlat_sdram_wr"], MEMLAT_SAMPLES)),
+        memlat_ocram_rd=tuple(ocd.read_words(symbols["g_memlat_ocram_rd"], MEMLAT_SAMPLES)),
+        memlat_ocram_wr=tuple(ocd.read_words(symbols["g_memlat_ocram_wr"], MEMLAT_SAMPLES)),
+        memlat_baseline=ocd.read_u32(symbols["g_memlat_baseline"]),
     )
     if irq_lost:
         print(f"  WARNING: {irq_lost}/{IRQ_SAMPLES} IRQ pings lost (SGI not delivered)")
@@ -1020,11 +1046,14 @@ def micro_test(ocd: OCD, symbols: dict[str, int]) -> MicroResult:
     print("\nmicrobenchmarks (cycles):")
     for name, v in (("ctxsw switch", res.ctxsw_switch), ("ctxsw resume", res.ctxsw_resume),
                     ("irq dispatch", res.irqlat), ("mutex uncont", res.mutex_unc),
-                    ("mutex cont",   res.mutex_con)):
+                    ("mutex cont",   res.mutex_con),
+                    ("memlat sdram rd", res.memlat_sdram_rd), ("memlat sdram wr", res.memlat_sdram_wr),
+                    ("memlat ocram rd", res.memlat_ocram_rd), ("memlat ocram wr", res.memlat_ocram_wr)):
         s = dist_stats(v)
-        print(f"  {name:13s} n={s['count']:5d}  min={s['min']:6d}  mean={s['mean']:8.1f}  "
+        print(f"  {name:16s} n={s['count']:5d}  min={s['min']:6d}  mean={s['mean']:8.1f}  "
               f"p99={s['p99']:6d}  max={s['max']:6d}")
     print(f"  switch fraction p = {p:.3f}  ({switch_count} switch / {resume_count} resume)")
+    print(f"  memlat baseline (pmu+dsb overhead) = {res.memlat_baseline} cycles")
 
     return res
 
@@ -1105,7 +1134,9 @@ def main(bootable: bool = False) -> None:
         "g_error_message", "g_error_ctx", "g_edf_bad_thread",
         "g_bal_assign", "g_bal_periods", "ktrace_bp_balance_ready", "ktrace_bp_balance_done",
         "g_ctxsw_switch", "g_ctxsw_resume", "g_ctxsw_switch_count", "g_ctxsw_resume_count",
-        "g_irqlat", "g_mutex_unc", "g_mutex_con", "ktrace_bp_micro_done", "g_micro_phase"))
+        "g_irqlat", "g_mutex_unc", "g_mutex_con", "ktrace_bp_micro_done", "g_micro_phase",
+        "g_memlat_sdram_rd", "g_memlat_sdram_wr", "g_memlat_ocram_rd", "g_memlat_ocram_wr",
+        "g_memlat_baseline"))
     if bootable:
         require_symbols(symbols, ("g_boot_release",))
 
@@ -1187,9 +1218,14 @@ def main(bootable: bool = False) -> None:
         _write_micro_csv(outdir / "irqlat.csv", [("irq_dispatch", micro.irqlat)])
         _write_micro_csv(outdir / "mutex.csv",
                          [("uncontended", micro.mutex_unc), ("contended", micro.mutex_con)])
+        _write_micro_csv(outdir / "memlat.csv",
+                         [("sdram_read", micro.memlat_sdram_rd), ("sdram_write", micro.memlat_sdram_wr),
+                          ("ocram_read", micro.memlat_ocram_rd), ("ocram_write", micro.memlat_ocram_wr)],
+                         extra=[["baseline_cycles", micro.memlat_baseline]])
         plot_ctxsw(micro, outdir / "ctxsw.png")
         plot_irqlat(micro, outdir / "irqlat.png")
         plot_mutex(micro, outdir / "mutex.png")
+        plot_memlat(micro, outdir / "memlat.png")
     print(f"\nPASS   artifacts in {outdir}")
 
 

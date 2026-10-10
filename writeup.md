@@ -27,18 +27,18 @@ Since we're running on a real chip we need to make sure all the hardware is init
 
 ## Types of Memory and Fused Kernel-Preloaders
 
-All A9's have something called On-Chip RAM (OCRAM). It's exactly what you'd expect and is 64KB on the Cyclone V. A9's also have an interface for Synchronous Dynamic RAM (SDRAM). The SDRAM lives off-chip and its implementation is up to the SOC manufacturer because memory requirements may change with the intended application. Lastly, the A9 has a special piece of memory called Boot ROM. The purpose of Boot ROM is to read data from something like an SD card and copy it into OCRAM. Then something like a preloader runs from OCRAM, initializes the SDRAM hardware, and copies the rest of the code into the SD card. Normally the kernel would be separate from the preloader and live alongside the application code in SDRAM but there's no reason why this is strictly necessary. This means we could in theory keep small kernels in OCRAM such that the distinction between preloader and kernel effectively becomes meaningless. Since OCRAM is faster this could generally be seen as preferable, especially when extremely strict real-time requirements necessitate that caches not be used. We could also move application code into OCRAM as well if it's small enough though we necessarly expect that it is. 
+All A9's have something called On-Chip RAM (OCRAM). It's exactly what you'd expect and is 64KB on the Cyclone V. A9's also have an interface for Synchronous Dynamic RAM (SDRAM). The SDRAM lives off-chip and its implementation is up to the SOC manufacturer because memory requirements may change with the intended application. Lastly, the A9 has a special piece of memory called Boot ROM. The purpose of Boot ROM is to read data from something like an SD card and copy it into OCRAM. Then something like a preloader runs from OCRAM, initializes the SDRAM hardware, and copies the rest of the code into the SD card. Normally the kernel would be separate from the preloader and live alongside the application code in SDRAM but there's no reason why this is strictly necessary. This means we could in theory keep small kernels in OCRAM such that the distinction between preloader and kernel effectively becomes meaningless. Since OCRAM is faster this could generally be seen as preferable, especially when extremely strict real-time requirements necessitate that caches not be used. It's also good for real-time performance, since SRAM access latency is far more deterministic than DRAM access latency, due to not having to interface with the DDR controller. We could also move application code into OCRAM as well if it's small enough though we do not necessarily expect that it is. 
 
 This is all to say we can combine the kernel with what would normally be considered a preloader and run it in OCRAM to make it slightly faster especially when the caches are turned off. To put it into perspective, here's a speed comparison:
 
-*SPEED COMPARISON HERE*
+![Uncached memory-access latency: SDRAM vs OCRAM, reads and writes (cycles)](figures/memlat.png)
 
 
 ## A9 Hardware
 
 As alluded to earlier, we are using a real A9 on a real SOC and so we have to worry about the physical hardware. Here's a picture:
 
-*ADD A9_FIG2 HERE*
+![The A9-based Cyclone V hardware](figures/a9_fig2.webp)
 
 Not pictured here is the Snoop Control Unit (SCU) which is used to manage cache coherence between both core's L1 caches and the MMU whcih is used for physical to virtual address translation and required for engaging the L1 data cache. 
 

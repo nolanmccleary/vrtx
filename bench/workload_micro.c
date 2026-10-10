@@ -11,10 +11,14 @@
 #include "preempt_sched.h"
 
 
+#ifdef MODE_TEST
+
+
 /* -------------------------------------------------------------------------
- * Three primitive-cost microbenchmarks, each a self-contained phase that leaves
- * the machine in a predictable state. The host reads the raw per-sample cycle
- * counts and builds the distributions (min/mean/p99/max + histogram).
+ * Primitive-cost microbenchmarks, each a self-contained phase that leaves the
+ * machine in a predictable state. The host reads the raw per-sample cycle counts
+ * and builds the distributions (min/mean/p99/max + histogram). The whole file is
+ * MODE_TEST-only: none of these host-readable regions exist in a production image.
  *
  *   ctxsw  -- next_thread() cost per tick, split by outcome into "switch" (a
  *             different thread ran) and "resume" (same thread continued). The
@@ -23,11 +27,13 @@
  *   irqlat -- SGI dispatch latency: trigger -> ISR body, same core, same PMU.
  *   mutex  -- lock+unlock uncontended (one core) and acquire latency contended
  *             (CPU1 holds/releases in a tight loop while CPU0 measures).
+ *   memlat -- uncached single-word store latency, SDRAM vs OCRAM.
  * ------------------------------------------------------------------------- */
 
 #define CTXSW_SAMPLES    1024u
 #define IRQ_SAMPLES      1024u
 #define MUTEX_SAMPLES    1024u
+#define MEMLAT_SAMPLES   8192u
 
 #define CTX_WORK_ITERS   8000u    /* per-release busy work for the ctxsw taskset (sub-tick) */
 #define MUTEX_HOLD_WORK  100u     /* CPU1's critical-section length between lock and unlock */
@@ -251,8 +257,77 @@ static void mutex_run(void)
 }
 
 
+/* --- uncached memory-access latency (SDRAM vs OCRAM) ----------------------- */
+
+HOST_SHARED uint32_t g_memlat_sdram_rd[MEMLAT_SAMPLES];
+HOST_SHARED uint32_t g_memlat_sdram_wr[MEMLAT_SAMPLES];
+HOST_SHARED uint32_t g_memlat_ocram_rd[MEMLAT_SAMPLES];
+HOST_SHARED uint32_t g_memlat_ocram_wr[MEMLAT_SAMPLES];
+HOST_SHARED uint32_t g_memlat_baseline;             /* empty-window pmu+dsb overhead */
+
+HOST_SHARED       volatile uint32_t g_memlat_sdram_target;   /* uncached SDRAM word (.telemetry) */
+HOST_SHARED_OCRAM volatile uint32_t g_memlat_ocram_target;   /* uncached OCRAM word (.host_ocram) */
+
+
+static volatile uint32_t memlat_sink;   /* consume the loaded value so it isn't dead-code-eliminated */
+
+
+/* Read and write latency of a single uncached access, measured independently.
+ * Both targets are Strongly-ordered (Device-mapped), so nothing is cached. The
+ * two directions are genuinely different paths, hence separate distributions:
+ *  - write: posted -- the DDR controller/interconnect accepts+acks before the data
+ *    lands, so it measures the accept path (constant, and SDRAM's posted path beats
+ *    OCRAM's interconnect ack).
+ *  - read: cannot be posted, the CPU stalls for the data, so it is the true access
+ *    latency (OCRAM fast + flat; SDRAM slower with the refresh/row spread).
+ * The dsb waits for the access to complete so it lands inside the timed window;
+ * for reads the volatile load is consumed via memlat_sink. The baseline is the same
+ * window with no access -- the common-mode pmu+dsb cost the host can subtract.
+ * noinline keeps one copy of each loop (OCRAM .text is tight). */
+__attribute__((noinline))
+static void memlat_read_loop(const volatile uint32_t* target, uint32_t* out)
+{
+    for (uint32_t i = 0; i < MEMLAT_SAMPLES; i++)
+    {
+        uint32_t t0 = pmu_cycles();
+        uint32_t v  = *target;
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        out[i] = pmu_cycles() - t0;
+        memlat_sink = v;
+    }
+}
+
+__attribute__((noinline))
+static void memlat_write_loop(volatile uint32_t* target, uint32_t* out)
+{
+    for (uint32_t i = 0; i < MEMLAT_SAMPLES; i++)
+    {
+        uint32_t t0 = pmu_cycles();
+        *target = i;
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        out[i] = pmu_cycles() - t0;
+    }
+}
+
+static void memlat_run(void)
+{
+    __asm__ __volatile__("cpsid i" ::: "memory");
+
+    uint32_t t0 = pmu_cycles();
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    g_memlat_baseline = pmu_cycles() - t0;
+
+    memlat_read_loop (&g_memlat_sdram_target, g_memlat_sdram_rd);
+    memlat_write_loop(&g_memlat_sdram_target, g_memlat_sdram_wr);
+    memlat_read_loop (&g_memlat_ocram_target, g_memlat_ocram_rd);
+    memlat_write_loop(&g_memlat_ocram_target, g_memlat_ocram_wr);
+
+    __asm__ __volatile__("cpsie i" ::: "memory");
+}
+
+
 /* Progress marker the host polls to localize a stall: 1=ctxsw 2=irqlat 3=mutex
- * 4=done. If the suite ever hangs, the phase that failed to advance names it. */
+ * 4=memlat 5=done. If the suite ever hangs, the phase that failed to advance names it. */
 HOST_SHARED volatile uint32_t g_micro_phase;
 
 
@@ -268,5 +343,11 @@ void micro_run(void)
     mutex_run();
 
     g_micro_phase = 4u;
+    memlat_run();
+
+    g_micro_phase = 5u;
     KTRACE_MICRO_DONE();
 }
+
+
+#endif  /* MODE_TEST */
